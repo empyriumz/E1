@@ -1,0 +1,14 @@
+general:
+  seed: 1
+  gpu_id: 0
+
+data:
+  input_file: /host/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/combined_sequences_cleaned.fasta
+  msa_dir: "/host/MMseqs2/rare_earth_results/a3m_files"  # Optional, for MSA context
+
+training:
+  checkpoint: "Synthyra/Profluent-E1-600M"  # HuggingFace-compatible E1 model identifier
+  mlm_probability: 0.15
+  max_eval_samples: null  # Optional: limit number of sequences if memory is an issue
+  model_dtype: bfloat16  # or "float16", "bfloat16"
+  output_dir: "results/hf_rare_earth_evaluation"
