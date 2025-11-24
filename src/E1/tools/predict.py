@@ -27,16 +27,30 @@ def save_prediction(prediction: E1Prediction, output_dir: str) -> None:
         tensors["mean_token_embeddings"] = prediction["mean_token_embeddings"]
 
     filename = f"{context_id}+{_id}.safetensors" if context_id else f"{_id}.safetensors"
-    save_file(tensors, os.path.join(output_dir, filename), metadata={"id": _id, "context_id": context_id})
+    save_file(
+        tensors,
+        os.path.join(output_dir, filename),
+        metadata={"id": _id, "context_id": context_id},
+    )
 
 
 @click.command()
 @click.option("--model-name", type=str, required=True, help="Name of the model to use")
-@click.option("--input-path", type=str, required=True, help="Path to the input fasta file")
-@click.option("--output-dir", type=str, default="predictions", help="Directory to save the predictions")
+@click.option(
+    "--input-path", type=str, required=True, help="Path to the input fasta file"
+)
+@click.option(
+    "--output-dir",
+    type=str,
+    default="predictions",
+    help="Directory to save the predictions",
+)
 @click.option("--context-path", type=str, help="Path to the context fasta file")
 @click.option(
-    "--max-batch-tokens", type=int, default=65536, help="Maximum number of tokens to batch in a single forward pass"
+    "--max-batch-tokens",
+    type=int,
+    default=65536,
+    help="Maximum number of tokens to batch in a single forward pass",
 )
 @click.option(
     "--save-masked-positions-only",
@@ -61,7 +75,9 @@ def predict(
 ) -> None:
     # Model is loaded in fp32, the actual predictions is made under torch.autocast(..., torch.bfloat16)
     # context manager
-    model = E1ForMaskedLM.from_pretrained(model_name, device_map=dist.get_device(), dtype=torch.float)
+    model = E1ForMaskedLM.from_pretrained(
+        model_name, device_map=dist.get_device(), dtype=torch.float
+    )
     model.eval()
 
     context_seqs: dict[str, str] | None = None
@@ -81,7 +97,9 @@ def predict(
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
         for prediction in predictor.predict(
-            sequences=list(sequences), sequence_ids=list(sequence_ids), context_seqs=context_seqs
+            sequences=list(sequences),
+            sequence_ids=list(sequence_ids),
+            context_seqs=context_seqs,
         ):
             futures.append(executor.submit(save_prediction, prediction, output_dir))
 

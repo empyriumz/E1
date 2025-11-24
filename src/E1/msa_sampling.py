@@ -36,11 +36,15 @@ def parse_msa(path: str) -> list[IdSequence]:
     records = list(read_fasta_sequences(path).items())
     sequences = []
     for record_id, record_seq in records:
-        sequences.append(IdSequence(record_id, str(record_seq).replace("\x00", "").replace(".", "-")))
+        sequences.append(
+            IdSequence(record_id, str(record_seq).replace("\x00", "").replace(".", "-"))
+        )
     return sequences
 
 
-def convert_to_tensor(sequences: list[IdSequence], device: torch.device | None = None) -> torch.ByteTensor:
+def convert_to_tensor(
+    sequences: list[IdSequence], device: torch.device | None = None
+) -> torch.ByteTensor:
     """
     Convert MSA Sequences to a Byte Tensor. Remove any lowercase characters which represent indels.
     Move the tensor to the specified device.
@@ -54,7 +58,9 @@ def convert_to_tensor(sequences: list[IdSequence], device: torch.device | None =
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    byte_seqs = [x.sequence.encode("ascii").translate(None, LOWERCASE_CHARS) for x in sequences]
+    byte_seqs = [
+        x.sequence.encode("ascii").translate(None, LOWERCASE_CHARS) for x in sequences
+    ]
     byte_seqs = np.vstack([np.frombuffer(x, dtype=np.uint8) for x in byte_seqs])
     byte_seqs = torch.from_numpy(byte_seqs)
     byte_seqs = byte_seqs.to(device)
@@ -62,7 +68,9 @@ def convert_to_tensor(sequences: list[IdSequence], device: torch.device | None =
     return byte_seqs
 
 
-def get_num_neighbors(byte_seqs: torch.ByteTensor, sim_threshold: float = 0.8) -> list[int]:
+def get_num_neighbors(
+    byte_seqs: torch.ByteTensor, sim_threshold: float = 0.8
+) -> list[int]:
     """
     Get the number of neighbors for each sequence in the MSA. A neighbor to a sequence is another sequence that
     is atleast sim_threshold similar to the former sequence. Similarity is calculated as the fraction of
@@ -82,7 +90,9 @@ def get_num_neighbors(byte_seqs: torch.ByteTensor, sim_threshold: float = 0.8) -
     num_neighbors = []
     for i in range(byte_seqs.shape[0]):
         query_non_gaps = byte_seqs[i] != gap_token_id
-        seqs_sim = (byte_seqs[:, query_non_gaps] == byte_seqs[i, query_non_gaps]).sum(dim=1) / seq_lens
+        seqs_sim = (byte_seqs[:, query_non_gaps] == byte_seqs[i, query_non_gaps]).sum(
+            dim=1
+        ) / seq_lens
         num_neighbors.append((seqs_sim >= sim_threshold).sum().item())
     return num_neighbors
 
@@ -145,10 +155,14 @@ def sample_context(
     """
     msa_sequences = parse_msa(msa_path)
     msa_as_byte_tensor = convert_to_tensor(msa_sequences, device)
-    if cache_num_neighbors_path is not None and os.path.exists(cache_num_neighbors_path):
+    if cache_num_neighbors_path is not None and os.path.exists(
+        cache_num_neighbors_path
+    ):
         num_neighbors = np.load(cache_num_neighbors_path)
     else:
-        num_neighbors = get_num_neighbors(msa_as_byte_tensor, neighbor_similarity_lower_bound)
+        num_neighbors = get_num_neighbors(
+            msa_as_byte_tensor, neighbor_similarity_lower_bound
+        )
         num_neighbors = np.array(num_neighbors)
 
         if cache_num_neighbors_path is not None:
@@ -156,7 +170,9 @@ def sample_context(
 
     sampling_weights = 1.0 / num_neighbors
     query_similarity = get_similarity_to_query(msa_as_byte_tensor)
-    filtered_indices = (query_similarity <= max_query_similarity) & (query_similarity >= min_query_similarity)
+    filtered_indices = (query_similarity <= max_query_similarity) & (
+        query_similarity >= min_query_similarity
+    )
 
     assert filtered_indices.sum() >= 1, (
         f"No sequences found with similarity to query within the given range: {min_query_similarity=} <= query_similarity <= {max_query_similarity=}. "
@@ -175,7 +191,9 @@ def sample_context(
     if use_full_sequences_in_context:
         assert full_sequences_path is not None
         full_sequences = parse_msa(full_sequences_path)
-        assert len(full_sequences) == len(msa_sequences), "Number of full sequences must match number of MSA sequences"
+        assert len(full_sequences) == len(
+            msa_sequences
+        ), "Number of full sequences must match number of MSA sequences"
         for i, (full_seq, msa_seq) in enumerate(zip(full_sequences, msa_sequences)):
             assert full_seq.id == msa_seq.id, (
                 "Full sequences and MSA sequences should be in the same order in the files and have same ids. "
@@ -190,7 +208,9 @@ def sample_context(
     context_ids = []
     context_length = 0
     for seq in sampled_sequences:
-        seq_str = seq.sequence.upper().encode("ascii").translate(None, b"-").decode("ascii")
+        seq_str = (
+            seq.sequence.upper().encode("ascii").translate(None, b"-").decode("ascii")
+        )
         if context_length + len(seq_str) > max_token_length:
             break
         context_sequences.append(seq_str)

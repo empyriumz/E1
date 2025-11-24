@@ -14,12 +14,19 @@ logger = logging.getLogger(__name__)
 
 @click.command()
 @click.option("--model-name", type=str, required=True, help="Name of the model to use")
-@click.option("--mutants-path", type=str, required=True, help="Path to the input fasta file")
-@click.option("--parent-path", type=str, required=True, help="Path to the parent fasta file")
+@click.option(
+    "--mutants-path", type=str, required=True, help="Path to the input fasta file"
+)
+@click.option(
+    "--parent-path", type=str, required=True, help="Path to the parent fasta file"
+)
 @click.option("--output-path", type=str, required=True, help="Path to the output file")
 @click.option("--context-path", type=str, help="Path to the context fasta file")
 @click.option(
-    "--max-batch-tokens", type=int, default=65536, help="Maximum number of tokens to batch in a single forward pass"
+    "--max-batch-tokens",
+    type=int,
+    default=65536,
+    help="Maximum number of tokens to batch in a single forward pass",
 )
 @click.option(
     "--scoring-method",
@@ -27,7 +34,12 @@ logger = logging.getLogger(__name__)
     default=EncoderScoreMethod.MASKED_MARGINAL,
     help="Method to use for scoring",
 )
-@click.option("--context-reduction", type=str, default="mean", help="How to reduce the context scores")
+@click.option(
+    "--context-reduction",
+    type=str,
+    default="mean",
+    help="How to reduce the context scores",
+)
 def score(
     model_name: str,
     mutants_path: str,
@@ -40,7 +52,9 @@ def score(
 ) -> None:
     # Model is loaded in fp32, the actual predictions is made under torch.autocast(..., torch.bfloat16)
     # context manager
-    model = E1ForMaskedLM.from_pretrained(model_name, dtype=torch.float).to(dist.get_device())
+    model = E1ForMaskedLM.from_pretrained(model_name, dtype=torch.float).to(
+        dist.get_device()
+    )
     model.eval()
 
     context_seqs: dict[str, str] | None = None

@@ -33,7 +33,11 @@ class E1Predictor:
         use_cache: bool = True,
         cache_size: int = 4,
         save_masked_positions_only: bool = False,
-        fields_to_save: list[str] = ["logits", "token_embeddings", "mean_token_embeddings"],
+        fields_to_save: list[str] = [
+            "logits",
+            "token_embeddings",
+            "mean_token_embeddings",
+        ],
         keep_predictions_in_gpu: bool = False,
     ):
         self.model = model
@@ -46,16 +50,25 @@ class E1Predictor:
         self.save_masked_positions_only = save_masked_positions_only
         self.keep_predictions_in_gpu = keep_predictions_in_gpu
 
-    def group_by_length(self, indexed_sequences: list[IndexedSequence]) -> list[list[IndexedSequence]]:
+    def group_by_length(
+        self, indexed_sequences: list[IndexedSequence]
+    ) -> list[list[IndexedSequence]]:
         batches: list[list[IndexedSequence]] = [[]]
-        for idx, seq in sorted(indexed_sequences, key=lambda idx_seq: (len(idx_seq[1]), idx_seq[0])):
-            if len(batches[-1]) > 0 and len(seq) * (len(batches[-1]) + 1) > self.max_batch_tokens:
+        for idx, seq in sorted(
+            indexed_sequences, key=lambda idx_seq: (len(idx_seq[1]), idx_seq[0])
+        ):
+            if (
+                len(batches[-1]) > 0
+                and len(seq) * (len(batches[-1]) + 1) > self.max_batch_tokens
+            ):
                 batches.append([])
             batches[-1].append((idx, seq))
 
         return batches
 
-    def group_by_context(self, indexed_sequences: list[IndexedSequence]) -> list[list[IndexedSequence]]:
+    def group_by_context(
+        self, indexed_sequences: list[IndexedSequence]
+    ) -> list[list[IndexedSequence]]:
         batches: dict[str | None, list[IndexedSequence]] = defaultdict(list)
         for idx, seq in indexed_sequences:
             batches[get_context(seq)].append((idx, seq))
@@ -72,13 +85,15 @@ class E1Predictor:
         indexed_batches = self.group_by_context(indexed_sequences)
         # Preserve context ordering
         indexed_batches = list(
-            itertools.chain.from_iterable([self.group_by_length(batch) for batch in indexed_batches])
+            itertools.chain.from_iterable(
+                [self.group_by_length(batch) for batch in indexed_batches]
+            )
         )
         batches = [[item[0] for item in batch] for batch in indexed_batches]  # type: ignore[no-redef,misc]
 
-        assert sorted(sum(batches, [])) == list(range(len(sequences))), (
-            "Batches must contain all indices with no repetition"
-        )
+        assert sorted(sum(batches, [])) == list(
+            range(len(sequences))
+        ), "Batches must contain all indices with no repetition"
 
         batches_with_validity = [(b, True) for b in batches]
 
@@ -91,7 +106,9 @@ class E1Predictor:
         return batches_with_validity[dist.get_rank() :: world_size]  # type: ignore[return-value]
 
     @torch.no_grad()
-    def predict_batch(self, sequences: list[str], sequence_metadata: list[dict[str, str | int]]) -> list[E1Prediction]:
+    def predict_batch(
+        self, sequences: list[str], sequence_metadata: list[dict[str, str | int]]
+    ) -> list[E1Prediction]:
         """
         Returns the logits/embeddings for the last sequence for multi-sequence inputs.
         """
@@ -117,7 +134,9 @@ class E1Predictor:
                 if not self.keep_predictions_in_gpu:
                     pred["token_embeddings"] = pred["token_embeddings"].to("cpu")  # type: ignore[union-attr]
             if "mean_token_embeddings" in self.fields_to_save:
-                pred["mean_token_embeddings"] = outputs["embeddings"][i, token_mask[i]].mean(dim=0)
+                pred["mean_token_embeddings"] = outputs["embeddings"][
+                    i, token_mask[i]
+                ].mean(dim=0)
                 if not self.keep_predictions_in_gpu:
                     pred["mean_token_embeddings"] = pred["mean_token_embeddings"].to("cpu")  # type: ignore[union-attr]
             predictions.append(pred)
@@ -137,7 +156,9 @@ class E1Predictor:
         """
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
         with torch.autocast(device_type, torch.bfloat16):
-            batch = self.batch_preparer.get_batch_kwargs(sequences, device=dist.get_device())
+            batch = self.batch_preparer.get_batch_kwargs(
+                sequences, device=dist.get_device()
+            )
 
             if self.kv_cache is not None:
                 self.kv_cache.before_forward(batch)
@@ -160,8 +181,12 @@ class E1Predictor:
 
             padding_mask = batch["input_ids"] == self.batch_preparer.pad_token_id
             last_sequence_mask = batch["sequence_ids"] == batch["sequence_ids"].max(dim=1)[0][:, None]  # type: ignore[union-attr]
-            boundary_token_mask = self.batch_preparer.get_boundary_token_mask(batch["input_ids"])
-            mask_positions_mask = self.batch_preparer.get_mask_positions_mask(batch["input_ids"])
+            boundary_token_mask = self.batch_preparer.get_boundary_token_mask(
+                batch["input_ids"]
+            )
+            mask_positions_mask = self.batch_preparer.get_mask_positions_mask(
+                batch["input_ids"]
+            )
 
             return {
                 "logits": logits,
@@ -188,17 +213,24 @@ class E1Predictor:
                 for seq, sequence_id in zip(sequences, sequence_ids)
             ]
         else:
-            sequences_with_context = [(seq, {"id": sequence_id}) for seq, sequence_id in zip(sequences, sequence_ids)]
+            sequences_with_context = [
+                (seq, {"id": sequence_id})
+                for seq, sequence_id in zip(sequences, sequence_ids)
+            ]
         sequences, sequence_metadata = tuple(zip(*sequences_with_context))  # type: ignore[assignment]
         sequence_batch_indices: list[tuple[list[int], bool]] = self.batch_sequences(sequences)  # type: ignore[arg-type]
         logger.info(f"Predicting for {len(sequence_batch_indices)} batches")
 
         for indices, is_valid_batch in tqdm(
-            sequence_batch_indices, desc="Predicting batches", disable=dist.get_local_rank() != 0
+            sequence_batch_indices,
+            desc="Predicting batches",
+            disable=dist.get_local_rank() != 0,
         ):
             sequence_batch = [sequences[i] for i in indices]
             sequence_batch_metadata = [sequence_metadata[i] for i in indices]
-            batch_predictions = self.predict_batch(sequence_batch, sequence_batch_metadata)
+            batch_predictions = self.predict_batch(
+                sequence_batch, sequence_batch_metadata
+            )
 
             if not is_valid_batch:
                 continue

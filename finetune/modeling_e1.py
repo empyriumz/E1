@@ -1,4 +1,5 @@
 import os
+
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 import numpy as np
@@ -26,7 +27,9 @@ logger = logging.get_logger(__name__)
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 except ImportError:
-    logger.warning("Failed to import flash attention; Will be using PyTorch attention instead")
+    logger.warning(
+        "Failed to import flash attention; Will be using PyTorch attention instead"
+    )
     flash_attn_func = None
     flash_attn_varlen_func = None
 
@@ -35,32 +38,40 @@ try:
         BlockMask,
         create_block_mask,
         flex_attention,
-        _create_sparse_block_from_block_mask
+        _create_sparse_block_from_block_mask,
     )
 
-    if torch.cuda.is_available():
-        # if on linux, compile the flex attention function
-        if os.name == 'posix':
-            print("Compiling flex attention")
-            flex_attention = torch.compile(flex_attention, dynamic=True)
-        else:
-            print("Not compiling flex attention, detected non-Linux environment")
+    # Do not compile flex_attention during training as it causes illegal memory access
+    # errors in the backward pass. Compilation can be enabled for inference only.
+    # if torch.cuda.is_available():
+    #     if os.name == 'posix':
+    #         print("Compiling flex attention")
+    #         flex_attention = torch.compile(flex_attention, dynamic=True)
+    #     else:
+    #         print("Not compiling flex attention, detected non-Linux environment")
 
 except ImportError:
-    logger.warning("Failed to import flex attention; Will be using PyTorch attention instead")
+    logger.warning(
+        "Failed to import flex attention; Will be using PyTorch attention instead"
+    )
     flex_attention = None
 
 try:
     from kernels import get_kernel
+
     layer_norm = get_kernel("kernels-community/triton-layer-norm")
 except Exception as e:
-    logger.warning(f"Failed to load triton layer norm kernel: {e}; Will be using PyTorch RMSNorm instead")
+    logger.warning(
+        f"Failed to load triton layer norm kernel: {e}; Will be using PyTorch RMSNorm instead"
+    )
     layer_norm = None
 
 
 def is_flash_attention_available() -> bool:
     return (
-        flash_attn_func is not None and flash_attn_varlen_func is not None and (os.getenv("USE_FLASH_ATTN", "1") == "1")
+        flash_attn_func is not None
+        and flash_attn_varlen_func is not None
+        and (os.getenv("USE_FLASH_ATTN", "1") == "1")
     )
 
 
@@ -80,7 +91,9 @@ def create_block_causal_mask_optimized(sequence_ids: torch.Tensor) -> BlockMask:
         )
 
     batch_size, seqlen = sequence_ids.shape
-    return create_block_mask(document_mask, batch_size, 1, seqlen, seqlen, device=sequence_ids.device)
+    return create_block_mask(
+        document_mask, batch_size, 1, seqlen, seqlen, device=sequence_ids.device
+    )
 
 
 def flex_attention_func(
@@ -90,7 +103,9 @@ def flex_attention_func(
     score_mod: Callable | None = None,
     block_mask: BlockMask | None = None,
 ) -> torch.Tensor:
-    assert flex_attention is not None, "Flex Attention is not available in this environment"
+    assert (
+        flex_attention is not None
+    ), "Flex Attention is not available in this environment"
     assert score_mod is None, "Score mod is not supported yet"
     query_states = query_states.transpose(1, 2).contiguous()  # (bs, nh, seqlen, hs)
     key_states = key_states.transpose(1, 2).contiguous()  # (bs, nkv, seqlen, hs)
@@ -119,7 +134,9 @@ def flash_attention_func(
 ) -> torch.Tensor:  # (bs, seqlen, nh, hs)
     # Contains at least one padding token in the sequence. Note: ignore attention mask if causal.
     if not is_flash_attention_available():
-        raise ImportError("Flash Attention is not available. Please install flash-attn.")
+        raise ImportError(
+            "Flash Attention is not available. Please install flash-attn."
+        )
 
     if not causal:
         batch_size, q_len = query_states.shape[0], query_states.shape[1]
@@ -130,7 +147,9 @@ def flash_attention_func(
             indices_q,
             (cu_seqlens_q, cu_seqlens_k),
             (max_seqlen_in_batch_q, max_seqlen_in_batch_k),
-        ) = _unpad_input(query_states, key_states, value_states, q_sequence_ids, k_sequence_ids)
+        ) = _unpad_input(
+            query_states, key_states, value_states, q_sequence_ids, k_sequence_ids
+        )
 
         attn_output_unpad = flash_attn_varlen_func(
             query_states,
@@ -145,7 +164,9 @@ def flash_attention_func(
         attn_output = pad_input(attn_output_unpad, indices_q, batch_size, q_len)
 
     else:
-        attn_output = flash_attn_func(query_states, key_states, value_states, causal=True)
+        attn_output = flash_attn_func(
+            query_states, key_states, value_states, causal=True
+        )
 
     return attn_output
 
@@ -159,9 +180,11 @@ class IndexFirstAxis(torch.autograd.Function):
         second_dim = other_shape.numel()
         # TD [2022-03-04] For some reason torch.gather is a bit faster than indexing.
         # return input[indices]
-        return torch.gather(rearrange(input, "b ... -> b (...)"), 0, repeat(indices, "z -> z d", d=second_dim)).reshape(
-            -1, *other_shape
-        )
+        return torch.gather(
+            rearrange(input, "b ... -> b (...)"),
+            0,
+            repeat(indices, "z -> z d", d=second_dim),
+        ).reshape(-1, *other_shape)
 
     @staticmethod
     def backward(ctx, grad_output) -> tuple[torch.Tensor, None]:  # type: ignore[no-untyped-def]
@@ -170,15 +193,21 @@ class IndexFirstAxis(torch.autograd.Function):
         other_shape = grad_output.shape[1:]
         grad_output = rearrange(grad_output, "b ... -> b (...)")
         grad_input = torch.zeros(
-            [ctx.first_axis_dim, grad_output.shape[1]], device=grad_output.device, dtype=grad_output.dtype
+            [ctx.first_axis_dim, grad_output.shape[1]],
+            device=grad_output.device,
+            dtype=grad_output.dtype,
         )
         # TD [2022-03-04] For some reason torch.scatter is a bit faster than indexing.
         # grad_input[indices] = grad_output
-        grad_input.scatter_(0, repeat(indices, "z -> z d", d=grad_output.shape[1]), grad_output)
+        grad_input.scatter_(
+            0, repeat(indices, "z -> z d", d=grad_output.shape[1]), grad_output
+        )
         return grad_input.reshape(ctx.first_axis_dim, *other_shape), None
 
 
-def block_min_max_seq_ids(SLEN: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
+def block_min_max_seq_ids(
+    SLEN: torch.Tensor, block_size: int = 128
+) -> tuple[torch.Tensor, torch.Tensor]:
     device = SLEN.device
     total_tokens = torch.sum(SLEN)
     B = (total_tokens + block_size - 1) // block_size
@@ -192,8 +221,12 @@ def block_min_max_seq_ids(SLEN: torch.Tensor, block_size: int = 128) -> tuple[to
     total_tokens = cum[-1].item()
 
     # Block start/end offsets [start, end) in token index space
-    block_starts = torch.arange(0, B * block_size, block_size, device=device, dtype=torch.long)  # (B,)
-    block_ends = torch.minimum(block_starts + block_size, torch.tensor(total_tokens, device=device))  # (B,)
+    block_starts = torch.arange(
+        0, B * block_size, block_size, device=device, dtype=torch.long
+    )  # (B,)
+    block_ends = torch.minimum(
+        block_starts + block_size, torch.tensor(total_tokens, device=device)
+    )  # (B,)
 
     # MIN_SEQ_ID[i] = first sequence whose end > block_start
     # searchsorted with right=True returns first index where cum > value
@@ -201,13 +234,17 @@ def block_min_max_seq_ids(SLEN: torch.Tensor, block_size: int = 128) -> tuple[to
 
     # MAX_SEQ_ID[i] = sequence containing the last token in the block (block_end - 1)
     # For empty tail beyond total_tokens we already clipped block_ends.
-    last_token_in_block = torch.clamp(block_ends - 1, min=0)  # valid only if block has at least 1 token
+    last_token_in_block = torch.clamp(
+        block_ends - 1, min=0
+    )  # valid only if block has at least 1 token
     MAX_SEQ_ID = torch.searchsorted(cum, last_token_in_block, right=True)
 
     return MIN_SEQ_ID, MAX_SEQ_ID
 
 
-def get_overlapping_blocks(SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def get_overlapping_blocks(
+    SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     MIN_Q, MAX_Q = block_min_max_seq_ids(SLEN_Q)
     MIN_K, MAX_K = block_min_max_seq_ids(SLEN_K)
 
@@ -233,7 +270,9 @@ def direct_block_mask(SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor) -> BlockMask:
     q_doc_id = torch.repeat_interleave(SLEN_Q)
     k_doc_id = torch.repeat_interleave(SLEN_K)
 
-    def doc_mask(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+    def doc_mask(
+        b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+    ) -> torch.Tensor:
         return q_doc_id[q_idx] == k_doc_id[kv_idx]
 
     total_q_len = q_doc_id.shape[0]
@@ -252,13 +291,17 @@ def doc_id_mask(SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor) -> BlockMask:
     q_doc_id = torch.repeat_interleave(SLEN_Q)
     k_doc_id = torch.repeat_interleave(SLEN_K)
 
-    def doc_mask(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+    def doc_mask(
+        b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+    ) -> torch.Tensor:
         return q_doc_id[q_idx] == k_doc_id[kv_idx]
 
     total_q_len = q_doc_id.shape[0]
     total_k_len = k_doc_id.shape[0]
 
-    return create_block_mask(doc_mask, 1, 1, total_q_len, total_k_len, BLOCK_SIZE=128, device=SLEN_Q.device)
+    return create_block_mask(
+        doc_mask, 1, 1, total_q_len, total_k_len, BLOCK_SIZE=128, device=SLEN_Q.device
+    )
 
 
 def varlen_flex_attention_func(
@@ -276,7 +319,9 @@ def varlen_flex_attention_func(
         indices_q,
         (cu_seqlens_q, cu_seqlens_k),
         (max_seqlen_in_batch_q, max_seqlen_in_batch_k),
-    ) = _unpad_input(query_states, key_states, value_states, q_sequence_ids, k_sequence_ids)
+    ) = _unpad_input(
+        query_states, key_states, value_states, q_sequence_ids, k_sequence_ids
+    )
 
     query_states = query_states.unsqueeze(0).transpose(1, 2).contiguous()
     key_states = key_states.unsqueeze(0).transpose(1, 2).contiguous()
@@ -294,7 +339,9 @@ def varlen_flex_attention_func(
         enable_gqa=query_states.shape[1] != key_states.shape[1],
     )
 
-    attn_output = pad_input(attn_output_unpad.transpose(1, 2).squeeze(0), indices_q, batch_size, q_len)
+    attn_output = pad_input(
+        attn_output_unpad.transpose(1, 2).squeeze(0), indices_q, batch_size, q_len
+    )
 
     return attn_output
 
@@ -305,7 +352,9 @@ class IndexPutFirstAxis(torch.autograd.Function):
         ctx.save_for_backward(indices)
         assert indices.ndim == 1
         assert values.ndim >= 2
-        output = torch.zeros(first_axis_dim, *values.shape[1:], device=values.device, dtype=values.dtype)
+        output = torch.zeros(
+            first_axis_dim, *values.shape[1:], device=values.device, dtype=values.dtype
+        )
         # TD [2022-03-04] For some reason torch.scatter is a bit faster than indexing.
         output[indices] = values
         # output.scatter_(0, repeat(indices, 'z -> z d', d=values.shape[1]), values)
@@ -323,7 +372,9 @@ class IndexPutFirstAxis(torch.autograd.Function):
 index_put_first_axis = IndexPutFirstAxis.apply
 
 
-def pad_input(hidden_states: torch.Tensor, indices: torch.Tensor, batch: int, seqlen: int) -> torch.Tensor:
+def pad_input(
+    hidden_states: torch.Tensor, indices: torch.Tensor, batch: int, seqlen: int
+) -> torch.Tensor:
     """
     Arguments:
         hidden_states: (total_nnz, ...), where total_nnz = number of tokens in selected in attention_mask.
@@ -339,14 +390,21 @@ def pad_input(hidden_states: torch.Tensor, indices: torch.Tensor, batch: int, se
     return rearrange(output, "(b s) ... -> b s ...", b=batch)
 
 
-def _get_unpad_data(sequence_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
+def _get_unpad_data(
+    sequence_ids: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
     non_pad_indices = sequence_ids != -1
     non_pad_indices = torch.nonzero(non_pad_indices.flatten(), as_tuple=False).flatten()
-    sequence_ids = sequence_ids + torch.arange(len(sequence_ids), device=sequence_ids.device)[:, None] * 1e5
+    sequence_ids = (
+        sequence_ids
+        + torch.arange(len(sequence_ids), device=sequence_ids.device)[:, None] * 1e5
+    )
     sequence_ids = sequence_ids.flatten()[non_pad_indices]
     _, seqlens_in_batch = torch.unique_consecutive(sequence_ids, return_counts=True)
     max_seqlen_in_batch = seqlens_in_batch.max().item()
-    cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.torch.int32), (1, 0))
+    cu_seqlens = F.pad(
+        torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.torch.int32), (1, 0)
+    )
     return non_pad_indices, cu_seqlens, max_seqlen_in_batch
 
 
@@ -356,23 +414,34 @@ def _unpad_input(
     value_layer: torch.Tensor,
     q_sequence_ids: torch.Tensor,
     k_sequence_ids: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor], tuple[int, int]]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    tuple[torch.Tensor, torch.Tensor],
+    tuple[int, int],
+]:
     batch_size, kv_seq_len, num_heads, head_dim = key_layer.shape
     query_length, num_q_heads = query_layer.shape[1], query_layer.shape[2]
-    assert query_layer.shape[:2] == q_sequence_ids.shape, (
-        f"Shape mismatch between query layer and query sequence ids: {query_layer.shape[:2]} != {q_sequence_ids.shape}"
-    )
-    assert key_layer.shape[:2] == k_sequence_ids.shape, (
-        f"Shape mismatch between key layer and key sequence ids: {key_layer.shape[:2]} != {k_sequence_ids.shape}"
-    )
-    assert query_length <= kv_seq_len, (
-        f"Query length should be less than or equal to KV sequence length: {query_length} <= {kv_seq_len}"
-    )
+    assert (
+        query_layer.shape[:2] == q_sequence_ids.shape
+    ), f"Shape mismatch between query layer and query sequence ids: {query_layer.shape[:2]} != {q_sequence_ids.shape}"
+    assert (
+        key_layer.shape[:2] == k_sequence_ids.shape
+    ), f"Shape mismatch between key layer and key sequence ids: {key_layer.shape[:2]} != {k_sequence_ids.shape}"
+    assert (
+        query_length <= kv_seq_len
+    ), f"Query length should be less than or equal to KV sequence length: {query_length} <= {kv_seq_len}"
 
     indices_k, cu_seqlens_k, max_seqlen_in_batch_k = _get_unpad_data(k_sequence_ids)
 
-    key_layer = index_first_axis(key_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k)
-    value_layer = index_first_axis(value_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k)
+    key_layer = index_first_axis(
+        key_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k
+    )
+    value_layer = index_first_axis(
+        value_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k
+    )
 
     if torch.equal(q_sequence_ids, k_sequence_ids):
         indices_q = indices_k
@@ -381,11 +450,13 @@ def _unpad_input(
     else:
         indices_q, cu_seqlens_q, max_seqlen_in_batch_q = _get_unpad_data(q_sequence_ids)
 
-    query_layer = index_first_axis(query_layer.reshape(batch_size * query_length, num_q_heads, head_dim), indices_q)
-
-    assert cu_seqlens_q.shape == cu_seqlens_k.shape, (
-        f"Query and KV should have the same number of sequences: {cu_seqlens_q.shape} != {cu_seqlens_k.shape}"
+    query_layer = index_first_axis(
+        query_layer.reshape(batch_size * query_length, num_q_heads, head_dim), indices_q
     )
+
+    assert (
+        cu_seqlens_q.shape == cu_seqlens_k.shape
+    ), f"Query and KV should have the same number of sequences: {cu_seqlens_q.shape} != {cu_seqlens_k.shape}"
 
     return (
         query_layer,
@@ -398,7 +469,9 @@ def _unpad_input(
 
 
 index_first_axis = IndexFirstAxis.apply
-block_mask_creator = direct_block_mask if os.getenv("FAST_BLOCK_MASK", "1") == "1" else doc_id_mask
+block_mask_creator = (
+    direct_block_mask if os.getenv("FAST_BLOCK_MASK", "1") == "1" else doc_id_mask
+)
 PAD_TOKEN_ID = 0
 
 
@@ -407,13 +480,18 @@ def get_tokenizer() -> Tokenizer:
         fname = os.path.join(os.path.dirname(__file__), "tokenizer.json")
         tokenizer: Tokenizer = Tokenizer.from_file(fname)
     except:
-        print("E1 Tokenizer not found in local directory, downloading from Hugging Face")
+        print(
+            "E1 Tokenizer not found in local directory, downloading from Hugging Face"
+        )
         from huggingface_hub import hf_hub_download
-        fname = hf_hub_download(repo_id="Synthyra/Profluent-E1-150M", filename="tokenizer.json")
+
+        fname = hf_hub_download(
+            repo_id="Synthyra/Profluent-E1-150M", filename="tokenizer.json"
+        )
         tokenizer: Tokenizer = Tokenizer.from_file(fname)
-    assert tokenizer.padding["pad_id"] == PAD_TOKEN_ID, (
-        f"Padding token id must be {PAD_TOKEN_ID}, but got {tokenizer.padding['pad_id']}"
-    )
+    assert (
+        tokenizer.padding["pad_id"] == PAD_TOKEN_ID
+    ), f"Padding token id must be {PAD_TOKEN_ID}, but got {tokenizer.padding['pad_id']}"
 
     return tokenizer
 
@@ -442,9 +520,13 @@ class E1BatchPreparer:
         self.data_prep_config = data_prep_config or DataPrepConfig()
         self.pad_token_id = self.tokenizer.token_to_id("<pad>")
         self.preserve_context_labels = preserve_context_labels
-        device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device("cpu")
+        # Store boundary_token_ids on CPU to avoid multiprocessing issues with CUDA tensors
         self.boundary_token_ids = torch.tensor(
-            [self.tokenizer.token_to_id(token) for token in ["<bos>", "<eos>", "1", "2", "<pad>"]], device=device
+            [
+                self.tokenizer.token_to_id(token)
+                for token in ["<bos>", "<eos>", "1", "2", "<pad>"]
+            ],
+            device=torch.device("cpu"),
         ).long()
         self.mask_token = "?"  # nosec
         self.mask_token_id = self.tokenizer.token_to_id(self.mask_token)
@@ -452,7 +534,10 @@ class E1BatchPreparer:
         self.vocab = self.tokenizer.get_vocab()
 
     def get_batch_kwargs(  # type: ignore[override]
-        self, sequences: list[str], device: torch.device = torch.device("cpu"), non_blocking: bool = False
+        self,
+        sequences: list[str],
+        device: torch.device = torch.device("cpu"),
+        non_blocking: bool = False,
     ) -> dict[str, torch.Tensor | list[str] | list[int]]:
         sequence_encodings = [self.prepare_multiseq(sequence) for sequence in sequences]
         return self.pad_encodings(sequence_encodings, device, non_blocking)
@@ -476,11 +561,15 @@ class E1BatchPreparer:
             "labels": self.pad_token_id,
         }.items():
             padded_encodings[key] = pad_sequence(
-                [enc[key] for enc in sequence_encodings], batch_first=True, padding_value=padding_value
+                [enc[key] for enc in sequence_encodings],
+                batch_first=True,
+                padding_value=padding_value,
             ).to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
         padded_encodings["context"] = [enc["context"] for enc in sequence_encodings]
-        padded_encodings["context_len"] = [enc["context_len"] for enc in sequence_encodings]
+        padded_encodings["context_len"] = [
+            enc["context_len"] for enc in sequence_encodings
+        ]
 
         return padded_encodings
 
@@ -492,13 +581,17 @@ class E1BatchPreparer:
                 " in the provided multi-sequence instance. Please remove some homologous sequences before trying again."
             )
 
-        single_sequence_encodings = [self.prepare_singleseq(sequence) for sequence in single_sequences]
+        single_sequence_encodings = [
+            self.prepare_singleseq(sequence) for sequence in single_sequences
+        ]
 
         num_tokens = [len(x["input_ids"]) for x in single_sequence_encodings]
         input_ids = torch.cat([x["input_ids"] for x in single_sequence_encodings])
         labels = torch.cat([x["labels"] for x in single_sequence_encodings])
 
-        within_seq_position_ids = torch.cat([encoding["position_ids"] for encoding in single_sequence_encodings])
+        within_seq_position_ids = torch.cat(
+            [encoding["position_ids"] for encoding in single_sequence_encodings]
+        )
         global_position_ids, ctx_len = [], 0
         for encoding in single_sequence_encodings:
             global_position_ids.append(encoding["position_ids"] + ctx_len)
@@ -509,7 +602,9 @@ class E1BatchPreparer:
 
         # Get multi-seq context & mask out all but last sequence in multi-seq instance if desired
         context_len = sum(num_tokens[:-1])
-        context = self.tokenizer.decode(input_ids[:context_len].tolist(), skip_special_tokens=False)
+        context = self.tokenizer.decode(
+            input_ids[:context_len].tolist(), skip_special_tokens=False
+        )
         if not self.preserve_context_labels:
             labels[:context_len] = self.pad_token_id
 
@@ -521,7 +616,9 @@ class E1BatchPreparer:
             == labels.shape
         ), "Input ids, sequence ids, within seq position ids, global position ids, and labels must have the same shape"
 
-        assert input_ids.shape[0] >= context_len, "Input ids must have at least as many tokens as the context length"
+        assert (
+            input_ids.shape[0] >= context_len
+        ), "Input ids must have at least as many tokens as the context length"
 
         return {
             "input_ids": input_ids,
@@ -535,7 +632,9 @@ class E1BatchPreparer:
 
     def prepare_singleseq(self, sequence: str) -> dict[str, torch.Tensor]:
         if not self.validate_sequence(sequence):
-            raise ValueError(f"Invalid sequence: {sequence}; Input sequence should contain [A-Z] or ? characters only")
+            raise ValueError(
+                f"Invalid sequence: {sequence}; Input sequence should contain [A-Z] or ? characters only"
+            )
 
         if len(sequence) > self.data_prep_config.max_num_positions_within_seq:
             raise ValueError(
@@ -544,7 +643,9 @@ class E1BatchPreparer:
 
         # Can also use `tokens = torch.tensor(self.tokenizer.encode(f"<bos>1{sequence}2<eos>").ids)`
         # but following is faster since our vocabulary is simple.
-        tokens = torch.tensor([self.vocab[token] for token in ["<bos>", "1", *sequence, "2", "<eos>"]])
+        tokens = torch.tensor(
+            [self.vocab[token] for token in ["<bos>", "1", *sequence, "2", "<eos>"]]
+        )
         position_ids = torch.arange(len(tokens))
 
         if self.data_prep_config.remove_X_tokens:
@@ -564,7 +665,6 @@ class E1BatchPreparer:
         assert isinstance(sequence, str), "Sequence must be a string"
         sequence = sequence.replace(self.mask_token, "")
         return sequence.isalpha() and sequence.isupper()
-
 
 
 class E1Config(PretrainedConfig):
@@ -648,14 +748,22 @@ class E1Config(PretrainedConfig):
                 )
                 self.vocab_size = vocab_size
             elif vocab_size > self.vocab_size:
-                logger.warning(f"Using vocab_size {vocab_size} instead of smaller {self.vocab_size} from tokenizer.")
+                logger.warning(
+                    f"Using vocab_size {vocab_size} instead of smaller {self.vocab_size} from tokenizer."
+                )
                 self.vocab_size = vocab_size
         if pad_token_id is not None and pad_token_id != self.pad_token_id:
-            logger.warning(f"Ignoring pad_token_id. Using {self.pad_token_id} from tokenizer")
+            logger.warning(
+                f"Ignoring pad_token_id. Using {self.pad_token_id} from tokenizer"
+            )
         if bos_token_id is not None and bos_token_id != self.bos_token_id:
-            logger.warning(f"Ignoring bos_token_id. Using {self.bos_token_id} from tokenizer")
+            logger.warning(
+                f"Ignoring bos_token_id. Using {self.bos_token_id} from tokenizer"
+            )
         if eos_token_id is not None and eos_token_id != self.eos_token_id:
-            logger.warning(f"Ignoring eos_token_id. Using {self.eos_token_id} from tokenizer")
+            logger.warning(
+                f"Ignoring eos_token_id. Using {self.eos_token_id} from tokenizer"
+            )
 
 
 class DynamicCache:
@@ -694,14 +802,18 @@ class DynamicCache:
                 self.value_cache.append(torch.tensor([]))
             self.key_cache.append(key_states)
             self.value_cache.append(value_states)
-        elif (
-            not self.key_cache[layer_idx].numel()  # prefers not t.numel() to len(t) == 0 to export the model
-        ):  # fills previously skipped layers; checking for tensor causes errors
+        elif not self.key_cache[
+            layer_idx
+        ].numel():  # prefers not t.numel() to len(t) == 0 to export the model  # fills previously skipped layers; checking for tensor causes errors
             self.key_cache[layer_idx] = key_states
             self.value_cache[layer_idx] = value_states
         else:
-            self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=1)
-            self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=1)
+            self.key_cache[layer_idx] = torch.cat(
+                [self.key_cache[layer_idx], key_states], dim=1
+            )
+            self.value_cache[layer_idx] = torch.cat(
+                [self.value_cache[layer_idx], value_states], dim=1
+            )
 
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
@@ -709,15 +821,19 @@ class DynamicCache:
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""
         is_empty_layer = (
             len(self.key_cache) == 0  # no cache in any layer
-            or len(self.key_cache) <= layer_idx  # skipped `layer_idx` and hasn't run a layer with cache after it
+            or len(self.key_cache)
+            <= layer_idx  # skipped `layer_idx` and hasn't run a layer with cache after it
             or not self.key_cache[layer_idx].numel()  # the layer has no cache
         )
-        layer_seq_length = self.key_cache[layer_idx].shape[1] if not is_empty_layer else 0
+        layer_seq_length = (
+            self.key_cache[layer_idx].shape[1] if not is_empty_layer else 0
+        )
         return layer_seq_length
 
     def crop(self, max_length: int) -> None:
         """Crop the past key values up to a new `max_length` in terms of tokens. `max_length` can also be
-        negative to remove `max_length` tokens. This is used in assisted decoding and contrastive search."""
+        negative to remove `max_length` tokens. This is used in assisted decoding and contrastive search.
+        """
         assert max_length > 0, "max_length must be positive"
 
         if self.get_seq_length() <= max_length:
@@ -725,15 +841,23 @@ class DynamicCache:
 
         for layer_idx in range(len(self.key_cache)):
             if self.key_cache[layer_idx].numel():
-                self.key_cache[layer_idx] = self.key_cache[layer_idx][:, :max_length, ...]
-                self.value_cache[layer_idx] = self.value_cache[layer_idx][:, :max_length, ...]
+                self.key_cache[layer_idx] = self.key_cache[layer_idx][
+                    :, :max_length, ...
+                ]
+                self.value_cache[layer_idx] = self.value_cache[layer_idx][
+                    :, :max_length, ...
+                ]
 
     def batch_repeat_interleave(self, repeats: int) -> None:
         """Repeat the cache `repeats` times in the batch dimension. Used in contrastive search."""
         for layer_idx in range(len(self.key_cache)):
             if self.key_cache[layer_idx].numel():
-                self.key_cache[layer_idx] = self.key_cache[layer_idx].repeat_interleave(repeats, dim=0)
-                self.value_cache[layer_idx] = self.value_cache[layer_idx].repeat_interleave(repeats, dim=0)
+                self.key_cache[layer_idx] = self.key_cache[layer_idx].repeat_interleave(
+                    repeats, dim=0
+                )
+                self.value_cache[layer_idx] = self.value_cache[
+                    layer_idx
+                ].repeat_interleave(repeats, dim=0)
 
     def batch_select_indices(self, indices: torch.Tensor) -> None:
         """Only keep the `indices` in the batch dimension of the cache. Used in contrastive search."""
@@ -804,7 +928,12 @@ class KVCache:
     def after_forward(self, batch: dict[str, Any], outputs: ModelOutput) -> None:
         contexts = batch.get("context", None)
         context_lens = batch.get("context_len", [])
-        if contexts is None or len(set(contexts)) != 1 or len(set(context_lens)) != 1 or context_lens[0] == 0:
+        if (
+            contexts is None
+            or len(set(contexts)) != 1
+            or len(set(context_lens)) != 1
+            or context_lens[0] == 0
+        ):
             return
 
         assert batch["use_cache"]
@@ -813,7 +942,9 @@ class KVCache:
 
         past_key_values = getattr(outputs, "past_key_values", None)
         if not isinstance(past_key_values, DynamicCache):
-            logger.warning_once("KVCache is incompatible with models that don't return a DynamicCache. Skipping.")
+            logger.warning_once(
+                "KVCache is incompatible with models that don't return a DynamicCache. Skipping."
+            )
             return
 
         if "past_key_values" not in batch:
@@ -836,7 +967,9 @@ class KVCache:
                 if field_name in outputs and outputs[field_name] is not None:
                     outputs[field_name] = outputs[field_name][:, unique_context_len:]
             if "hidden_states" in outputs and outputs["hidden_states"] is not None:
-                outputs["hidden_states"] = [h[:, unique_context_len:] for h in outputs["hidden_states"]]
+                outputs["hidden_states"] = [
+                    h[:, unique_context_len:] for h in outputs["hidden_states"]
+                ]
 
         self.cache_dict[unique_context].crop(unique_context_len)
         self.cache_dict[unique_context].batch_select_indices([0])
@@ -865,24 +998,34 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
 class RotaryPositionalEmbedding(nn.Module):
     def __init__(
-        self, dim: int, max_position_embeddings: int = 2048, base: int = 10000, device: torch.device | None = None
+        self,
+        dim: int,
+        max_position_embeddings: int = 2048,
+        base: int = 10000,
+        device: torch.device | None = None,
     ):
         super().__init__()
 
         self.dim = dim
         self.base = base
         self.max_position_embeddings = max_position_embeddings
-        inv_freq = base ** -(torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim)
+        inv_freq = base ** -(
+            torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim
+        )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_sin_cos_cache(seq_len=max_position_embeddings, device=self.inv_freq.device)
+        self._set_sin_cos_cache(
+            seq_len=max_position_embeddings, device=self.inv_freq.device
+        )
 
     @staticmethod
     def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -901,7 +1044,11 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer("sin_cached", angles.sin(), persistent=False)
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.LongTensor, seq_len: int | None = None
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        position_ids: torch.LongTensor,
+        seq_len: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # x: [bsz, seq_len, num_attention_heads, head_size]
         device, dtype = q.device, q.dtype
@@ -945,15 +1092,24 @@ class Attention(nn.Module):
                 f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
                 f" and `num_heads`: {self.num_heads})."
             )
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        self.q_proj = nn.Linear(
+            self.hidden_size, self.num_heads * self.head_dim, bias=False
+        )
+        self.k_proj = nn.Linear(
+            self.hidden_size, self.num_kv_heads * self.head_dim, bias=False
+        )
+        self.v_proj = nn.Linear(
+            self.hidden_size, self.num_kv_heads * self.head_dim, bias=False
+        )
+        self.o_proj = nn.Linear(
+            self.num_heads * self.head_dim, self.hidden_size, bias=False
+        )
 
         if self.config.global_attention_every_n_layers > 0:
             self.layer_type = (
                 AttentionLayerType.GLOBAL
-                if (self.layer_idx + 1) % self.config.global_attention_every_n_layers == 0
+                if (self.layer_idx + 1) % self.config.global_attention_every_n_layers
+                == 0
                 else AttentionLayerType.WITHIN_SEQ
             )
         else:
@@ -971,7 +1127,9 @@ class Attention(nn.Module):
         )
 
         self.rotary_emb = RotaryPositionalEmbedding(
-            self.head_dim, max_position_embeddings=self.max_position_embeddings, base=self.rope_theta
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
         )
 
     def prepare_qkv(
@@ -995,10 +1153,14 @@ class Attention(nn.Module):
             key_states = key_states.clamp(-self.clip_qkv, self.clip_qkv)
             val_states = val_states.clamp(-self.clip_qkv, self.clip_qkv)
 
-        query_states, key_states = self.rotary_emb(query_states, key_states, position_ids)
+        query_states, key_states = self.rotary_emb(
+            query_states, key_states, position_ids
+        )
 
         if use_cache and past_key_value is not None:
-            key_states, val_states = past_key_value.update(key_states, val_states, self.layer_idx)
+            key_states, val_states = past_key_value.update(
+                key_states, val_states, self.layer_idx
+            )
 
         # In PEFT, usually we cast the layer norms in float32 for training stability reasons
         # therefore the input hidden states gets silently casted in float32. Hence, we need
@@ -1032,14 +1194,18 @@ class Attention(nn.Module):
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, DynamicCache | None]:
         is_cache_prefilled = (
-            use_cache and past_key_value is not None and past_key_value.get_seq_length(self.layer_idx) > 0
+            use_cache
+            and past_key_value is not None
+            and past_key_value.get_seq_length(self.layer_idx) > 0
         )
 
         query_states, key_states, val_states = self.prepare_qkv(
             hidden_states=hidden_states,
-            position_ids=within_seq_position_ids
-            if self.layer_type == AttentionLayerType.WITHIN_SEQ
-            else global_position_ids,
+            position_ids=(
+                within_seq_position_ids
+                if self.layer_type == AttentionLayerType.WITHIN_SEQ
+                else global_position_ids
+            ),
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
@@ -1082,7 +1248,9 @@ class Attention(nn.Module):
             case AttentionMethod.FLEX:
                 f = self._flex_attn
             case _:
-                raise ValueError(f"No attention implementation found for {attention_type}")
+                raise ValueError(
+                    f"No attention implementation found for {attention_type}"
+                )
         return f(
             query_states=query_states,
             key_states=key_states,
@@ -1105,7 +1273,9 @@ class Attention(nn.Module):
 
         Calls the public API of flash attention and deals with padding tokens if any are present.
         """
-        assert not output_attentions, "Flash attention doesn't support returning attention masks"
+        assert (
+            not output_attentions
+        ), "Flash attention doesn't support returning attention masks"
         bsz, q_len = query_states.shape[0], query_states.shape[1]
         _, kv_len = key_states.shape[0], key_states.shape[1]
 
@@ -1115,7 +1285,9 @@ class Attention(nn.Module):
                 # Assumes query contain only one sequence
                 # and all tokens in query (except padding) will attend to all tokens in KV
                 first_token_id = sequence_ids[:, 0].unsqueeze(1)
-                k_sequence_ids = torch.cat([first_token_id.expand(bsz, kv_len - q_len), sequence_ids], dim=-1)
+                k_sequence_ids = torch.cat(
+                    [first_token_id.expand(bsz, kv_len - q_len), sequence_ids], dim=-1
+                )
             else:
                 k_sequence_ids = sequence_ids
         else:
@@ -1135,7 +1307,11 @@ class Attention(nn.Module):
             )
         else:
             attn_output = varlen_flex_attention_func(
-                query_states, key_states, val_states, q_sequence_ids=q_sequence_ids, k_sequence_ids=k_sequence_ids
+                query_states,
+                key_states,
+                val_states,
+                q_sequence_ids=q_sequence_ids,
+                k_sequence_ids=k_sequence_ids,
             )
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
@@ -1151,10 +1327,28 @@ class Attention(nn.Module):
         output_attentions: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         bsz, q_len = query_states.shape[0], query_states.shape[1]
-        flex_attention_args = attention_args.get("flex_attention_args", None) if attention_args is not None else None
-        block_mask = flex_attention_args.get("block_mask", None) if flex_attention_args is not None else None
-        score_mod = flex_attention_args.get("score_mod", None) if flex_attention_args is not None else None
-        outputs = flex_attention_func(query_states, key_states, val_states, score_mod=score_mod, block_mask=block_mask)
+        flex_attention_args = (
+            attention_args.get("flex_attention_args", None)
+            if attention_args is not None
+            else None
+        )
+        block_mask = (
+            flex_attention_args.get("block_mask", None)
+            if flex_attention_args is not None
+            else None
+        )
+        score_mod = (
+            flex_attention_args.get("score_mod", None)
+            if flex_attention_args is not None
+            else None
+        )
+        outputs = flex_attention_func(
+            query_states,
+            key_states,
+            val_states,
+            score_mod=score_mod,
+            block_mask=block_mask,
+        )
 
         outputs = outputs.reshape(bsz, q_len, self.hidden_size).contiguous()
         return outputs, None
@@ -1286,7 +1480,9 @@ class NormAttentionNorm(nn.Module):
         super().__init__()
         self.self_attn = Attention(config, layer_idx)
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
 
     def forward(
         self,
@@ -1337,15 +1533,17 @@ class DecoderLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, DynamicCache | None]:
-        hidden_states, residual, self_attn_weights, present_key_value = self.norm_attn_norm(
-            hidden_states=hidden_states,
-            within_seq_position_ids=within_seq_position_ids,
-            global_position_ids=global_position_ids,
-            sequence_ids=sequence_ids,
-            attention_args=attention_args,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
+        hidden_states, residual, self_attn_weights, present_key_value = (
+            self.norm_attn_norm(
+                hidden_states=hidden_states,
+                within_seq_position_ids=within_seq_position_ids,
+                global_position_ids=global_position_ids,
+                sequence_ids=sequence_ids,
+                attention_args=attention_args,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+            )
         )
 
         # Fully Connected
@@ -1360,32 +1558,51 @@ class Pooler:
     def __init__(self, pooling_types: List[str]):
         self.pooling_types = pooling_types
         self.pooling_options = {
-            'mean': self.mean_pooling,
-            'max': self.max_pooling,
-            'norm': self.norm_pooling,
-            'median': self.median_pooling,
-            'std': self.std_pooling,
-            'var': self.var_pooling,
-            'cls': self.cls_pooling,
-            'parti': self._pool_parti,
+            "mean": self.mean_pooling,
+            "max": self.max_pooling,
+            "norm": self.norm_pooling,
+            "median": self.median_pooling,
+            "std": self.std_pooling,
+            "var": self.var_pooling,
+            "cls": self.cls_pooling,
+            "parti": self._pool_parti,
         }
 
-    def _create_pooled_matrices_across_layers(self, attentions: torch.Tensor) -> torch.Tensor:
+    def _create_pooled_matrices_across_layers(
+        self, attentions: torch.Tensor
+    ) -> torch.Tensor:
         maxed_attentions = torch.max(attentions, dim=1)[0]
         return maxed_attentions
 
-    def _page_rank(self, attention_matrix, personalization=None, nstart=None, prune_type="top_k_outdegree"):
+    def _page_rank(
+        self,
+        attention_matrix,
+        personalization=None,
+        nstart=None,
+        prune_type="top_k_outdegree",
+    ):
         # Run PageRank on the attention matrix converted to a graph.
         # Raises exceptions if the graph doesn't match the token sequence or has no edges.
         # Returns the PageRank scores for each token node.
         G = self._convert_to_graph(attention_matrix)
         if G.number_of_nodes() != attention_matrix.shape[0]:
             raise Exception(
-                f"The number of nodes in the graph should be equal to the number of tokens in sequence! You have {G.number_of_nodes()} nodes for {attention_matrix.shape[0]} tokens.")
+                f"The number of nodes in the graph should be equal to the number of tokens in sequence! You have {G.number_of_nodes()} nodes for {attention_matrix.shape[0]} tokens."
+            )
         if G.number_of_edges() == 0:
-            raise Exception(f"You don't seem to have any attention edges left in the graph.")
+            raise Exception(
+                f"You don't seem to have any attention edges left in the graph."
+            )
 
-        return nx.pagerank(G, alpha=0.85, tol=1e-06, weight='weight', personalization=personalization, nstart=nstart, max_iter=100)
+        return nx.pagerank(
+            G,
+            alpha=0.85,
+            tol=1e-06,
+            weight="weight",
+            personalization=personalization,
+            nstart=nstart,
+            max_iter=100,
+        )
 
     def _convert_to_graph(self, matrix):
         # Convert a matrix (e.g., attention scores) to a directed graph using networkx.
@@ -1393,98 +1610,135 @@ class Pooler:
         G = nx.from_numpy_array(matrix, create_using=nx.DiGraph)
         return G
 
-    def _calculate_importance_weights(self, dict_importance, attention_mask: Optional[torch.Tensor] = None):
+    def _calculate_importance_weights(
+        self, dict_importance, attention_mask: Optional[torch.Tensor] = None
+    ):
         # Remove keys where attention_mask is 0
         if attention_mask is not None:
             for k in list(dict_importance.keys()):
                 if attention_mask[k] == 0:
                     del dict_importance[k]
 
-        #dict_importance[0] # remove cls
-        #dict_importance[-1] # remove eos
+        # dict_importance[0] # remove cls
+        # dict_importance[-1] # remove eos
         total = sum(dict_importance.values())
         return np.array([v / total for _, v in dict_importance.items()])
 
-    def _pool_parti(self, emb: torch.Tensor, attentions: torch.Tensor, attention_mask: Optional[torch.Tensor] = None): # (b, L, d) -> (b, d)
-        maxed_attentions = self._create_pooled_matrices_across_layers(attentions).numpy()
+    def _pool_parti(
+        self,
+        emb: torch.Tensor,
+        attentions: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ):  # (b, L, d) -> (b, d)
+        maxed_attentions = self._create_pooled_matrices_across_layers(
+            attentions
+        ).numpy()
         # emb is (b, L, d), maxed_attentions is (b, L, L)
         emb_pooled = []
         for e, a, mask in zip(emb, maxed_attentions, attention_mask):
             dict_importance = self._page_rank(a)
-            importance_weights = self._calculate_importance_weights(dict_importance, mask)
+            importance_weights = self._calculate_importance_weights(
+                dict_importance, mask
+            )
             num_tokens = int(mask.sum().item())
-            emb_pooled.append(np.average(e[:num_tokens], weights=importance_weights, axis=0))
+            emb_pooled.append(
+                np.average(e[:num_tokens], weights=importance_weights, axis=0)
+            )
         pooled = torch.tensor(np.array(emb_pooled))
         return pooled
 
-    def mean_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+    def mean_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         if attention_mask is None:
             return emb.mean(dim=1)
         else:
             attention_mask = attention_mask.unsqueeze(-1)
             return (emb * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)
 
-    def max_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+    def max_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         if attention_mask is None:
             return emb.max(dim=1).values
         else:
             attention_mask = attention_mask.unsqueeze(-1)
             return (emb * attention_mask).max(dim=1).values
 
-    def norm_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+    def norm_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         if attention_mask is None:
             return emb.norm(dim=1, p=2)
         else:
             attention_mask = attention_mask.unsqueeze(-1)
             return (emb * attention_mask).norm(dim=1, p=2)
 
-    def median_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+    def median_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         if attention_mask is None:
             return emb.median(dim=1).values
         else:
             attention_mask = attention_mask.unsqueeze(-1)
             return (emb * attention_mask).median(dim=1).values
-    
-    def std_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+
+    def std_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         if attention_mask is None:
             return emb.std(dim=1)
         else:
             # Compute variance correctly over non-masked positions, then take sqrt
             var = self.var_pooling(emb, attention_mask, **kwargs)
             return torch.sqrt(var)
-    
-    def var_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+
+    def var_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         if attention_mask is None:
             return emb.var(dim=1)
         else:
             # Correctly compute variance over only non-masked positions
             attention_mask = attention_mask.unsqueeze(-1)  # (b, L, 1)
             # Compute mean over non-masked positions
-            mean = (emb * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)  # (b, d)
+            mean = (emb * attention_mask).sum(dim=1) / attention_mask.sum(
+                dim=1
+            )  # (b, d)
             mean = mean.unsqueeze(1)  # (b, 1, d)
             # Compute squared differences from mean, only over non-masked positions
             squared_diff = (emb - mean) ** 2  # (b, L, d)
             # Sum squared differences over non-masked positions and divide by count
-            var = (squared_diff * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)  # (b, d)
+            var = (squared_diff * attention_mask).sum(dim=1) / attention_mask.sum(
+                dim=1
+            )  # (b, d)
             return var
 
-    def cls_pooling(self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs): # (b, L, d) -> (b, d)
+    def cls_pooling(
+        self, emb: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ):  # (b, L, d) -> (b, d)
         return emb[:, 0, :]
 
     def __call__(
-            self,
-            emb: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            attentions: Optional[torch.Tensor] = None
-        ): # [mean, max]
+        self,
+        emb: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        attentions: Optional[torch.Tensor] = None,
+    ):  # [mean, max]
         final_emb = []
         for pooling_type in self.pooling_types:
-            final_emb.append(self.pooling_options[pooling_type](emb=emb, attention_mask=attention_mask, attentions=attentions)) # (b, d)
-        return torch.cat(final_emb, dim=-1) # (b, n_pooling_types * d)
+            final_emb.append(
+                self.pooling_options[pooling_type](
+                    emb=emb, attention_mask=attention_mask, attentions=attentions
+                )
+            )  # (b, d)
+        return torch.cat(final_emb, dim=-1)  # (b, n_pooling_types * d)
 
 
 class EmbeddingMixin:
-    def _embed(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _embed(
+        self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     @property
@@ -1495,6 +1749,7 @@ class EmbeddingMixin:
     def _read_sequences_from_db(self, db_path: str) -> set[str]:
         """Read sequences from SQLite database."""
         import sqlite3
+
         sequences = []
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
@@ -1509,21 +1764,21 @@ class EmbeddingMixin:
     def embed_dataset(
         self,
         sequences: List[str],
-        #tokenizer: PreTrainedTokenizerBase, # For E1, the tokenizing is handled by _embed
+        # tokenizer: PreTrainedTokenizerBase, # For E1, the tokenizing is handled by _embed
         batch_size: int = 2,
         max_len: int = 512,
         truncate: bool = True,
         full_embeddings: bool = False,
         embed_dtype: torch.dtype = torch.float32,
-        pooling_types: List[str] = ['mean'],
+        pooling_types: List[str] = ["mean"],
         sql: bool = False,
         save: bool = True,
-        sql_db_path: str = 'embeddings.db',
-        save_path: str = 'embeddings.pth',
+        sql_db_path: str = "embeddings.db",
+        save_path: str = "embeddings.pth",
         **kwargs,
     ) -> Optional[dict[str, torch.Tensor]]:
         """Embed a dataset of protein sequences.
-        
+
         Args:
             sequences: List of protein sequences
             batch_size: Batch size for processing
@@ -1532,7 +1787,7 @@ class EmbeddingMixin:
             pooling_type: Type of pooling ('mean' or 'cls')
             sql: Whether to store embeddings in SQLite database - will be stored in float32
             sql_db_path: Path to SQLite database
-            
+
         Returns:
             Dictionary mapping sequences to embeddings, or None if sql=True
 
@@ -1567,31 +1822,50 @@ class EmbeddingMixin:
         hidden_size = self.config.hidden_size
         pooler = Pooler(pooling_types) if not full_embeddings else None
 
-        def get_embeddings(residue_embeddings: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-            if full_embeddings or residue_embeddings.ndim == 2: # if already pooled or want residue-wise embeddings
+        def get_embeddings(
+            residue_embeddings: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
+            if (
+                full_embeddings or residue_embeddings.ndim == 2
+            ):  # if already pooled or want residue-wise embeddings
                 return residue_embeddings
             else:
                 return pooler(residue_embeddings, attention_mask)
 
         if sql:
             import sqlite3
+
             conn = sqlite3.connect(sql_db_path)
             c = conn.cursor()
-            c.execute('CREATE TABLE IF NOT EXISTS embeddings (sequence text PRIMARY KEY, embedding blob)')
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS embeddings (sequence text PRIMARY KEY, embedding blob)"
+            )
             already_embedded = self._read_sequences_from_db(sql_db_path)
             to_embed = [seq for seq in sequences if seq not in already_embedded]
-            print(f"Found {len(already_embedded)} already embedded sequences in {sql_db_path}")
+            print(
+                f"Found {len(already_embedded)} already embedded sequences in {sql_db_path}"
+            )
             print(f"Embedding {len(to_embed)} new sequences")
             if len(to_embed) > 0:
                 with torch.no_grad():
-                    for batch_start in tqdm(range(0, len(to_embed), batch_size), desc='Embedding batches'):
-                        seqs = to_embed[batch_start:batch_start + batch_size]
-                        input_ids, attention_mask = self._embed(seqs, return_attention_mask=True) 
-                        embeddings = get_embeddings(input_ids, attention_mask).float() # sql requires float32
+                    for batch_start in tqdm(
+                        range(0, len(to_embed), batch_size), desc="Embedding batches"
+                    ):
+                        seqs = to_embed[batch_start : batch_start + batch_size]
+                        input_ids, attention_mask = self._embed(
+                            seqs, return_attention_mask=True
+                        )
+                        embeddings = get_embeddings(
+                            input_ids, attention_mask
+                        ).float()  # sql requires float32
                         for seq, emb, mask in zip(seqs, embeddings, attention_mask):
                             if full_embeddings:
                                 emb = emb[mask.bool()].reshape(-1, hidden_size)
-                            c.execute("INSERT OR REPLACE INTO embeddings VALUES (?, ?)", (seq, emb.cpu().numpy().tobytes()))
+                            c.execute(
+                                "INSERT OR REPLACE INTO embeddings VALUES (?, ?)",
+                                (seq, emb.cpu().numpy().tobytes()),
+                            )
                         conn.commit()
                 conn.commit()
             conn.close()
@@ -1599,9 +1873,13 @@ class EmbeddingMixin:
 
         embeddings_dict = {}
         if os.path.exists(save_path):
-            embeddings_dict = torch.load(save_path, map_location='cpu', weights_only=True)
+            embeddings_dict = torch.load(
+                save_path, map_location="cpu", weights_only=True
+            )
             to_embed = [seq for seq in sequences if seq not in embeddings_dict]
-            print(f"Found {len(embeddings_dict)} already embedded sequences in {save_path}")
+            print(
+                f"Found {len(embeddings_dict)} already embedded sequences in {save_path}"
+            )
             print(f"Embedding {len(to_embed)} new sequences")
         else:
             to_embed = sequences
@@ -1609,10 +1887,16 @@ class EmbeddingMixin:
 
         if len(to_embed) > 0:
             with torch.no_grad():
-                for batch_start in tqdm(range(0, len(to_embed), batch_size), desc='Embedding batches'):
-                    seqs = to_embed[batch_start:batch_start + batch_size]
-                    last_hidden_state, attention_mask = self._embed(seqs, return_attention_mask=True)
-                    embeddings = get_embeddings(last_hidden_state, attention_mask).to(embed_dtype)
+                for batch_start in tqdm(
+                    range(0, len(to_embed), batch_size), desc="Embedding batches"
+                ):
+                    seqs = to_embed[batch_start : batch_start + batch_size]
+                    last_hidden_state, attention_mask = self._embed(
+                        seqs, return_attention_mask=True
+                    )
+                    embeddings = get_embeddings(last_hidden_state, attention_mask).to(
+                        embed_dtype
+                    )
                     for seq, emb, mask in zip(seqs, embeddings, attention_mask):
                         if full_embeddings:
                             emb = emb[mask.bool()].reshape(-1, hidden_size)
@@ -1650,7 +1934,9 @@ class E1PreTrainedModel(PreTrainedModel):
         super().post_init()
 
     def _backward_compatibility_gradient_checkpointing(self) -> None:
-        if self.supports_gradient_checkpointing and getattr(self.config, "gradient_checkpointing", False):
+        if self.supports_gradient_checkpointing and getattr(
+            self.config, "gradient_checkpointing", False
+        ):
             self.gradient_checkpointing_enable(dict(use_reentrant=False))
 
     @property
@@ -1667,13 +1953,18 @@ class E1PreTrainedModel(PreTrainedModel):
 class E1Model(E1PreTrainedModel, EmbeddingMixin):
     config: E1Config
     config_class = E1Config
+
     def __init__(self, config: E1Config, **kwargs):
         E1PreTrainedModel.__init__(self, config, **kwargs)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size, self.padding_idx
+        )
         self.embed_seq_id = nn.Embedding(config.max_num_sequences, config.hidden_size)
-        self.layers = nn.ModuleList([DecoderLayer(config, i) for i in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [DecoderLayer(config, i) for i in range(config.num_hidden_layers)]
+        )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gradient_checkpointing = config.gradient_checkpointing
         self.prep_tokens = E1BatchPreparer()
@@ -1686,11 +1977,15 @@ class E1Model(E1PreTrainedModel, EmbeddingMixin):
         self.embed_tokens = value
 
     @torch.inference_mode()
-    def _embed(self, sequences: List[str], return_attention_mask: bool = False, **kwargs) -> torch.Tensor:
+    def _embed(
+        self, sequences: List[str], return_attention_mask: bool = False, **kwargs
+    ) -> torch.Tensor:
         batch = self.prep_tokens.get_batch_kwargs(sequences, device=self._device)
-        last_hidden_state = self.forward(**batch, output_hidden_states=False, output_attentions=False).last_hidden_state
+        last_hidden_state = self.forward(
+            **batch, output_hidden_states=False, output_attentions=False
+        ).last_hidden_state
         if return_attention_mask:
-            attention_mask = (batch['sequence_ids'] != -1).long()
+            attention_mask = (batch["sequence_ids"] != -1).long()
             return last_hidden_state, attention_mask
         else:
             return last_hidden_state
@@ -1706,7 +2001,7 @@ class E1Model(E1PreTrainedModel, EmbeddingMixin):
         use_cache: bool = False,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
-        **kwargs
+        **kwargs,
     ) -> E1ModelOutputWithPast:
         """
         Args:
@@ -1752,9 +2047,10 @@ class E1Model(E1PreTrainedModel, EmbeddingMixin):
 
         max_position_id = torch.max(within_seq_position_ids).item()
         min_position_id = torch.min(within_seq_position_ids).item()
-        assert max_position_id < self.config.max_num_positions_within_seq and min_position_id >= -1, (
-            f"Position ids must be in the range [-1, {self.config.max_num_positions_within_seq}); got max {max_position_id} and min {min_position_id}"
-        )
+        assert (
+            max_position_id < self.config.max_num_positions_within_seq
+            and min_position_id >= -1
+        ), f"Position ids must be in the range [-1, {self.config.max_num_positions_within_seq}); got max {max_position_id} and min {min_position_id}"
 
         inputs_embeds = self.embed_tokens(input_ids)
         # -1 is used to indicate padding tokens, so we need to clamp the sequence ids to 0
@@ -1768,7 +2064,9 @@ class E1Model(E1PreTrainedModel, EmbeddingMixin):
         hidden_states = inputs_embeds.to(target_dtype)
 
         # (batch_size, query_length, keyval_length)
-        past_key_values_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+        past_key_values_length = (
+            past_key_values.get_seq_length() if past_key_values is not None else 0
+        )
 
         # Create block mask for flex attention
         attention_args: AttentionArgs | None = None
@@ -1786,7 +2084,11 @@ class E1Model(E1PreTrainedModel, EmbeddingMixin):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)  # type: ignore[operator]
 
-            if self.gradient_checkpointing and self.training and torch.is_grad_enabled():
+            if (
+                self.gradient_checkpointing
+                and self.training
+                and torch.is_grad_enabled()
+            ):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
@@ -1840,6 +2142,7 @@ class E1Model(E1PreTrainedModel, EmbeddingMixin):
 class E1ForMaskedLM(E1PreTrainedModel, EmbeddingMixin):
     config: E1Config
     config_class = E1Config
+
     def __init__(self, config: E1Config, **kwargs):
         E1PreTrainedModel.__init__(self, config, **kwargs)
         self.model: E1Model = E1Model(config)
@@ -1859,11 +2162,15 @@ class E1ForMaskedLM(E1PreTrainedModel, EmbeddingMixin):
         return self.model.device_mesh
 
     @torch.inference_mode()
-    def _embed(self, sequences: List[str], return_attention_mask: bool = False, **kwargs) -> torch.Tensor:
+    def _embed(
+        self, sequences: List[str], return_attention_mask: bool = False, **kwargs
+    ) -> torch.Tensor:
         batch = self.prep_tokens.get_batch_kwargs(sequences, device=self._device)
-        last_hidden_state = self.model(**batch, output_hidden_states=False, output_attentions=False).last_hidden_state
+        last_hidden_state = self.model(
+            **batch, output_hidden_states=False, output_attentions=False
+        ).last_hidden_state
         if return_attention_mask:
-            attention_mask = (batch['sequence_ids'] != -1).long()
+            attention_mask = (batch["sequence_ids"] != -1).long()
             return last_hidden_state, attention_mask
         else:
             return last_hidden_state
@@ -1925,12 +2232,13 @@ class E1ForMaskedLM(E1PreTrainedModel, EmbeddingMixin):
         if labels is not None:
             mlm_logits_flat = mlm_logits.contiguous().view(-1, self.config.vocab_size)
             mlm_labels_flat = labels.to(mlm_logits_flat.device).contiguous().view(-1)
-            mlm_loss = F.cross_entropy(mlm_logits_flat, mlm_labels_flat, reduction="none")
-            mask = mlm_labels_flat != self.model.padding_idx
-            n_mlm = mask.sum()
-            mlm_loss = (mlm_loss * mask.to(mlm_loss)).sum() / (1 if n_mlm == 0 else n_mlm)
-            loss = 0.0
-            loss += mlm_loss
+            mlm_loss = F.cross_entropy(
+                mlm_logits_flat,
+                mlm_labels_flat,
+                ignore_index=self.model.padding_idx,
+                reduction="mean",
+            )
+            loss = mlm_loss
 
         return E1MaskedLMOutputWithPast(
             loss=loss,
@@ -1946,6 +2254,7 @@ class E1ForMaskedLM(E1PreTrainedModel, EmbeddingMixin):
 class E1ForSequenceClassification(E1PreTrainedModel, EmbeddingMixin):
     config: E1Config
     config_class = E1Config
+
     def __init__(self, config: E1Config, **kwargs):
         E1PreTrainedModel.__init__(self, config, **kwargs)
         self.model: E1Model = E1Model(config)
@@ -1963,10 +2272,14 @@ class E1ForSequenceClassification(E1PreTrainedModel, EmbeddingMixin):
         self.gradient_checkpointing = config.gradient_checkpointing
         self.prep_tokens = E1BatchPreparer()
 
-        if 'pooling_types' in kwargs and isinstance(kwargs['pooling_types'], List[str]) and len(kwargs['pooling_types']) > 0:
-            pooling_types = kwargs['pooling_types']
+        if (
+            "pooling_types" in kwargs
+            and isinstance(kwargs["pooling_types"], List[str])
+            and len(kwargs["pooling_types"]) > 0
+        ):
+            pooling_types = kwargs["pooling_types"]
         else:
-            pooling_types = ['mean', 'var']
+            pooling_types = ["mean", "var"]
         self.pooler = Pooler(pooling_types)
         self.post_init()
 
@@ -1975,11 +2288,15 @@ class E1ForSequenceClassification(E1PreTrainedModel, EmbeddingMixin):
         return self.model.device_mesh
 
     @torch.inference_mode()
-    def _embed(self, sequences: List[str], return_attention_mask: bool = False, **kwargs) -> torch.Tensor:
+    def _embed(
+        self, sequences: List[str], return_attention_mask: bool = False, **kwargs
+    ) -> torch.Tensor:
         batch = self.prep_tokens.get_batch_kwargs(sequences, device=self._device)
-        last_hidden_state = self.model(**batch, output_hidden_states=False, output_attentions=False).last_hidden_state
+        last_hidden_state = self.model(
+            **batch, output_hidden_states=False, output_attentions=False
+        ).last_hidden_state
         if return_attention_mask:
-            attention_mask = (batch['sequence_ids'] != -1).long()
+            attention_mask = (batch["sequence_ids"] != -1).long()
             return last_hidden_state, attention_mask
         else:
             return last_hidden_state
@@ -2018,7 +2335,9 @@ class E1ForSequenceClassification(E1PreTrainedModel, EmbeddingMixin):
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                elif self.num_labels > 1 and (
+                    labels.dtype == torch.long or labels.dtype == torch.int
+                ):
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"
@@ -2046,6 +2365,7 @@ class E1ForSequenceClassification(E1PreTrainedModel, EmbeddingMixin):
 class E1ForTokenClassification(E1PreTrainedModel, EmbeddingMixin):
     config: E1Config
     config_class = E1Config
+
     def __init__(self, config: E1Config, **kwargs):
         E1PreTrainedModel.__init__(self, config, **kwargs)
         self.model: E1Model = E1Model(config)
@@ -2067,11 +2387,15 @@ class E1ForTokenClassification(E1PreTrainedModel, EmbeddingMixin):
         return self.model.device_mesh
 
     @torch.inference_mode()
-    def _embed(self, sequences: List[str], return_attention_mask: bool = False, **kwargs) -> torch.Tensor:
+    def _embed(
+        self, sequences: List[str], return_attention_mask: bool = False, **kwargs
+    ) -> torch.Tensor:
         batch = self.prep_tokens.get_batch_kwargs(sequences, device=self._device)
-        last_hidden_state = self.model(**batch, output_hidden_states=False, output_attentions=False).last_hidden_state
+        last_hidden_state = self.model(
+            **batch, output_hidden_states=False, output_attentions=False
+        ).last_hidden_state
         if return_attention_mask:
-            attention_mask = (batch['sequence_ids'] != -1).long()
+            attention_mask = (batch["sequence_ids"] != -1).long()
             return last_hidden_state, attention_mask
         else:
             return last_hidden_state
@@ -2118,18 +2442,26 @@ class E1ForTokenClassification(E1PreTrainedModel, EmbeddingMixin):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = E1ForSequenceClassification.from_pretrained("Profluent-Bio/E1-150m", dtype=torch.bfloat16, num_labels=1).eval().to(device)
+    model = (
+        E1ForSequenceClassification.from_pretrained(
+            "Profluent-Bio/E1-150m", dtype=torch.bfloat16, num_labels=1
+        )
+        .eval()
+        .to(device)
+    )
     print(model)
 
     seqs = [
-    "MRHGDISSSNDTVGVAVVNYKMPRLHTAAEVLDNARKIAEMIVGMKQGLPGMDLVVFPEYSLQGIMYDPAEMMETAVAIPGEETE",
-    "IFSRACRKANVWGVFSLTGERHEEHPRKAPYNTLVLIDNNGEIVQKYRKIIPWCPIEGWYPGGQTYVSEGPKGMKISLIICDDGNY",
-    "PEIWRDCAMKGAELIVRCQGYMYPAKDQQVMMAKAMAWANNCYVAVANAAGFDGVYSYFGHSAIIGFDGRTLGECGEEEMGIQYAQL",
-    "SLSQIRDARANDQSQNHLFKILHRGYSGLQASGDGDRGLAECPFEFYRTWVTDAEKARENVERLTRSTTGVAQCPVGRLPYEGLEKEA",
+        "MRHGDISSSNDTVGVAVVNYKMPRLHTAAEVLDNARKIAEMIVGMKQGLPGMDLVVFPEYSLQGIMYDPAEMMETAVAIPGEETE",
+        "IFSRACRKANVWGVFSLTGERHEEHPRKAPYNTLVLIDNNGEIVQKYRKIIPWCPIEGWYPGGQTYVSEGPKGMKISLIICDDGNY",
+        "PEIWRDCAMKGAELIVRCQGYMYPAKDQQVMMAKAMAWANNCYVAVANAAGFDGVYSYFGHSAIIGFDGRTLGECGEEEMGIQYAQL",
+        "SLSQIRDARANDQSQNHLFKILHRGYSGLQASGDGDRGLAECPFEFYRTWVTDAEKARENVERLTRSTTGVAQCPVGRLPYEGLEKEA",
     ]
 
     batch = model.prep_tokens.get_batch_kwargs(seqs, device=device)
-    batch['labels'] = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
+    batch["labels"] = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
 
-    last_hidden_state = model(**batch, output_hidden_states=False, output_attentions=False).last_hidden_state
+    last_hidden_state = model(
+        **batch, output_hidden_states=False, output_attentions=False
+    ).last_hidden_state
     print(last_hidden_state.shape)

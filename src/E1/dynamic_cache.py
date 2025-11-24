@@ -43,14 +43,18 @@ class DynamicCache:
                 self.value_cache.append(torch.tensor([]))
             self.key_cache.append(key_states)
             self.value_cache.append(value_states)
-        elif (
-            not self.key_cache[layer_idx].numel()  # prefers not t.numel() to len(t) == 0 to export the model
-        ):  # fills previously skipped layers; checking for tensor causes errors
+        elif not self.key_cache[
+            layer_idx
+        ].numel():  # prefers not t.numel() to len(t) == 0 to export the model  # fills previously skipped layers; checking for tensor causes errors
             self.key_cache[layer_idx] = key_states
             self.value_cache[layer_idx] = value_states
         else:
-            self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=1)
-            self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=1)
+            self.key_cache[layer_idx] = torch.cat(
+                [self.key_cache[layer_idx], key_states], dim=1
+            )
+            self.value_cache[layer_idx] = torch.cat(
+                [self.value_cache[layer_idx], value_states], dim=1
+            )
 
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
@@ -58,15 +62,19 @@ class DynamicCache:
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""
         is_empty_layer = (
             len(self.key_cache) == 0  # no cache in any layer
-            or len(self.key_cache) <= layer_idx  # skipped `layer_idx` and hasn't run a layer with cache after it
+            or len(self.key_cache)
+            <= layer_idx  # skipped `layer_idx` and hasn't run a layer with cache after it
             or not self.key_cache[layer_idx].numel()  # the layer has no cache
         )
-        layer_seq_length = self.key_cache[layer_idx].shape[1] if not is_empty_layer else 0
+        layer_seq_length = (
+            self.key_cache[layer_idx].shape[1] if not is_empty_layer else 0
+        )
         return layer_seq_length
 
     def crop(self, max_length: int) -> None:
         """Crop the past key values up to a new `max_length` in terms of tokens. `max_length` can also be
-        negative to remove `max_length` tokens. This is used in assisted decoding and contrastive search."""
+        negative to remove `max_length` tokens. This is used in assisted decoding and contrastive search.
+        """
         assert max_length > 0, "max_length must be positive"
 
         if self.get_seq_length() <= max_length:
@@ -74,15 +82,23 @@ class DynamicCache:
 
         for layer_idx in range(len(self.key_cache)):
             if self.key_cache[layer_idx].numel():
-                self.key_cache[layer_idx] = self.key_cache[layer_idx][:, :max_length, ...]
-                self.value_cache[layer_idx] = self.value_cache[layer_idx][:, :max_length, ...]
+                self.key_cache[layer_idx] = self.key_cache[layer_idx][
+                    :, :max_length, ...
+                ]
+                self.value_cache[layer_idx] = self.value_cache[layer_idx][
+                    :, :max_length, ...
+                ]
 
     def batch_repeat_interleave(self, repeats: int) -> None:
         """Repeat the cache `repeats` times in the batch dimension. Used in contrastive search."""
         for layer_idx in range(len(self.key_cache)):
             if self.key_cache[layer_idx].numel():
-                self.key_cache[layer_idx] = self.key_cache[layer_idx].repeat_interleave(repeats, dim=0)
-                self.value_cache[layer_idx] = self.value_cache[layer_idx].repeat_interleave(repeats, dim=0)
+                self.key_cache[layer_idx] = self.key_cache[layer_idx].repeat_interleave(
+                    repeats, dim=0
+                )
+                self.value_cache[layer_idx] = self.value_cache[
+                    layer_idx
+                ].repeat_interleave(repeats, dim=0)
 
     def batch_select_indices(self, indices: torch.Tensor) -> None:
         """Only keep the `indices` in the batch dimension of the cache. Used in contrastive search."""
@@ -153,7 +169,12 @@ class KVCache:
     def after_forward(self, batch: dict[str, Any], outputs: ModelOutput) -> None:
         contexts = batch.get("context", None)
         context_lens = batch.get("context_len", [])
-        if contexts is None or len(set(contexts)) != 1 or len(set(context_lens)) != 1 or context_lens[0] == 0:
+        if (
+            contexts is None
+            or len(set(contexts)) != 1
+            or len(set(context_lens)) != 1
+            or context_lens[0] == 0
+        ):
             return
 
         assert batch["use_cache"]
@@ -162,7 +183,9 @@ class KVCache:
 
         past_key_values = getattr(outputs, "past_key_values", None)
         if not isinstance(past_key_values, DynamicCache):
-            logger.warning_once("KVCache is incompatible with models that don't return a DynamicCache. Skipping.")
+            logger.warning_once(
+                "KVCache is incompatible with models that don't return a DynamicCache. Skipping."
+            )
             return
 
         if "past_key_values" not in batch:
@@ -185,7 +208,9 @@ class KVCache:
                 if field_name in outputs and outputs[field_name] is not None:
                     outputs[field_name] = outputs[field_name][:, unique_context_len:]
             if "hidden_states" in outputs and outputs["hidden_states"] is not None:
-                outputs["hidden_states"] = [h[:, unique_context_len:] for h in outputs["hidden_states"]]
+                outputs["hidden_states"] = [
+                    h[:, unique_context_len:] for h in outputs["hidden_states"]
+                ]
 
         self.cache_dict[unique_context].crop(unique_context_len)
         self.cache_dict[unique_context].batch_select_indices([0])

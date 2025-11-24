@@ -1,0 +1,69 @@
+general:
+  seed: 1
+  gpu_id: "0"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
+
+data:
+  homologs_dir: "/host/MMseqs2/rare_earth_results/a3m_files"  # Directory containing .a3m MSA files
+  swissprot_file: "/host/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
+  val_split_ratio: 0.1
+  max_length: 16384  # Maximum sequence length in tokens. E1 uses block causal attention that scales better than L^2.
+                     # Evaluation script uses max_token_length=14784 for MSA sampling.
+                     # Can be increased further (e.g., 32768) depending on GPU memory.
+
+training:
+  checkpoint: "Synthyra/Profluent-E1-600M"  # Options: "Synthyra/Profluent-E1-600M" or "Profluent-Bio/E1-600m"
+  output_dir: "results/e1_lora_checkpoints"
+  resume_from_checkpoint: null  # Path to checkpoint folder to resume training from
+                                # Set to null to start fresh training
+  save_best_checkpoint: true    # Whether to save the best checkpoint folder for resuming training later
+  epochs: 10
+  batch_size: 4  # Start smaller due to longer sequences with MSA context
+  accum_steps: 4  # Increase gradient accumulation to maintain effective batch size
+  learning_rate: 0.0002
+  weight_decay: 0.01  # L2 regularization weight decay. Range: 0.0 (no regularization) to 0.1 (strong regularization)
+  optimizer: "adamw_torch_fused"  # Options: "adamw_hf", "adamw_torch", "adamw_torch_fused" (fastest), "adamw_apex_fused", "sgd", "adafactor"
+  lr_scheduler_type: "cosine"  # Options: "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"
+  warmup_steps: 400  # Number of warmup steps. LR starts at 0 and linearly increases to learning_rate over warmup_steps.
+                    # Useful for stabilizing training at the beginning. Typically 5-10% of total training steps.
+  mixed_precision: "bf16"  # E1 was trained in bfloat16, use bf16 for best compatibility
+  model_dtype: "bfloat16"  # Model weight dtype: "float16", "bfloat16", or null for float32
+  mlm_probability: 0.15
+  gradient_checkpointing: false  # Reduces memory usage at cost of ~20% slower training
+  dataloader_num_workers: 16  # Set to 0 to avoid CUDA multiprocessing issues
+  
+  # Evaluation and logging settings
+  eval_strategy: "steps"  # Options: "no", "steps", "epoch"
+  eval_steps: 100  # Evaluate every N training steps
+  eval_batch_size: 4  # Evaluation batch size (smaller for longer sequences with MSA context)
+  max_eval_samples: 1500  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
+  eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
+                                # Lower values use less GPU memory but may be slightly slower.
+  logging_strategy: "steps"  # Options: "no", "steps", "epoch"
+  logging_steps: 20  # Log metrics every N training steps
+  
+  # Early stopping configuration
+  early_stopping:
+    enabled: true  # Set to true to enable early stopping
+    patience: 4  # Number of evaluations without improvement before stopping
+    metric: "eval_Combined_perplexity"  # Metric to monitor. Options: "eval_Combined_perplexity", "eval_Combined_accuracy", 
+                                        # "eval_Homologs_perplexity", "eval_SwissProt_perplexity", etc.
+    threshold: 0.0  # Minimum change required to qualify as improvement (0.0 = any improvement)
+    min_steps: 1000  # Minimum training steps before early stopping can trigger (informational - ensure eval_steps * patience >= min_steps)
+
+  # MSA sampling parameters
+  msa_sampling:
+    max_num_samples: 64  # Maximum number of sequences to sample from MSA for context
+    max_query_similarity: 0.95  # Maximum similarity of context sequences to query
+    min_query_similarity: 0.0  # Minimum similarity of context sequences to query
+    neighbor_similarity_lower_bound: 0.8  # Minimum similarity to be considered a neighbor for weighted sampling
+
+lora:
+  r: 16
+  alpha: 32  # Default alpha for E1 models (typically 2x r)
+  bias: "none"  # Options: "none", "all", "lora_only"
+  lora_dropout: 0.05  # Dropout rate for LoRA layers
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "w1", "w2", "w3"]
+  # Note: E1 uses w1, w2, w3 for MLP (GLUMLP) vs ESM's intermediate.dense, output.dense
+  # PEFT matches by substring, so "w1" matches "mlp.w1" in DecoderLayer.ffn.mlp.w1
+  # Do NOT include "lm_head" or embeddings - keep output/input layers frozen to preserve pretrained knowledge
+

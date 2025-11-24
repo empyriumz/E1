@@ -22,7 +22,9 @@ logger = logging.get_logger(__name__)
 try:
     layer_norm = get_kernel("kernels-community/triton-layer-norm")
 except Exception as e:
-    logger.warning(f"Failed to load triton layer norm kernel: {e}; Will be using PyTorch RMSNorm instead")
+    logger.warning(
+        f"Failed to load triton layer norm kernel: {e}; Will be using PyTorch RMSNorm instead"
+    )
     layer_norm = None
 
 
@@ -103,7 +105,9 @@ class NormAttentionNorm(nn.Module):
         super().__init__()
         self.self_attn = Attention(config, layer_idx)
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
 
     def forward(
         self,
@@ -154,15 +158,17 @@ class DecoderLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, DynamicCache | None]:
-        hidden_states, residual, self_attn_weights, present_key_value = self.norm_attn_norm(
-            hidden_states=hidden_states,
-            within_seq_position_ids=within_seq_position_ids,
-            global_position_ids=global_position_ids,
-            sequence_ids=sequence_ids,
-            attention_args=attention_args,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
+        hidden_states, residual, self_attn_weights, present_key_value = (
+            self.norm_attn_norm(
+                hidden_states=hidden_states,
+                within_seq_position_ids=within_seq_position_ids,
+                global_position_ids=global_position_ids,
+                sequence_ids=sequence_ids,
+                attention_args=attention_args,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+            )
         )
 
         # Fully Connected
@@ -198,7 +204,9 @@ class E1PreTrainedModel(PreTrainedModel):
         super().post_init()
 
     def _backward_compatibility_gradient_checkpointing(self) -> None:
-        if self.supports_gradient_checkpointing and getattr(self.config, "gradient_checkpointing", False):
+        if self.supports_gradient_checkpointing and getattr(
+            self.config, "gradient_checkpointing", False
+        ):
             self.gradient_checkpointing_enable(dict(use_reentrant=False))
 
     @classmethod
@@ -215,9 +223,13 @@ class E1Model(E1PreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size, self.padding_idx
+        )
         self.embed_seq_id = nn.Embedding(config.max_num_sequences, config.hidden_size)
-        self.layers = nn.ModuleList([DecoderLayer(config, i) for i in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [DecoderLayer(config, i) for i in range(config.num_hidden_layers)]
+        )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gradient_checkpointing = config.gradient_checkpointing
         self.post_init()
@@ -284,9 +296,10 @@ class E1Model(E1PreTrainedModel):
 
         max_position_id = torch.max(within_seq_position_ids).item()
         min_position_id = torch.min(within_seq_position_ids).item()
-        assert max_position_id < self.config.max_num_positions_within_seq and min_position_id >= -1, (
-            f"Position ids must be in the range [-1, {self.config.max_num_positions_within_seq}); got max {max_position_id} and min {min_position_id}"
-        )
+        assert (
+            max_position_id < self.config.max_num_positions_within_seq
+            and min_position_id >= -1
+        ), f"Position ids must be in the range [-1, {self.config.max_num_positions_within_seq}); got max {max_position_id} and min {min_position_id}"
 
         inputs_embeds = self.embed_tokens(input_ids)
         # -1 is used to indicate padding tokens, so we need to clamp the sequence ids to 0
@@ -300,7 +313,9 @@ class E1Model(E1PreTrainedModel):
         hidden_states = inputs_embeds.to(target_dtype)
 
         # (batch_size, query_length, keyval_length)
-        past_key_values_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+        past_key_values_length = (
+            past_key_values.get_seq_length() if past_key_values is not None else 0
+        )
 
         # Create block mask for flex attention
         attention_args: AttentionArgs | None = None
@@ -318,7 +333,11 @@ class E1Model(E1PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)  # type: ignore[operator]
 
-            if self.gradient_checkpointing and self.training and torch.is_grad_enabled():
+            if (
+                self.gradient_checkpointing
+                and self.training
+                and torch.is_grad_enabled()
+            ):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
@@ -445,10 +464,14 @@ class E1ForMaskedLM(E1PreTrainedModel):
         if labels is not None:
             mlm_logits_flat = mlm_logits.contiguous().view(-1, self.config.vocab_size)
             mlm_labels_flat = labels.to(mlm_logits_flat.device).contiguous().view(-1)
-            mlm_loss = F.cross_entropy(mlm_logits_flat, mlm_labels_flat, reduction="none")
+            mlm_loss = F.cross_entropy(
+                mlm_logits_flat, mlm_labels_flat, reduction="none"
+            )
             mask = mlm_labels_flat != self.model.padding_idx
             n_mlm = mask.sum()
-            mlm_loss = (mlm_loss * mask.to(mlm_loss)).sum() / (1 if n_mlm == 0 else n_mlm)
+            mlm_loss = (mlm_loss * mask.to(mlm_loss)).sum() / (
+                1 if n_mlm == 0 else n_mlm
+            )
             loss = 0.0
             loss += mlm_loss
 

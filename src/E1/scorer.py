@@ -21,9 +21,13 @@ class EncoderScoreMethod(str, Enum):
 
 
 def find_mismatches(s1: str | np.ndarray, s2: str) -> list[int]:
-    assert isinstance(s1, (str, np.ndarray)), f"s1 must be a string or numpy array, got {type(s1)}"
+    assert isinstance(
+        s1, (str, np.ndarray)
+    ), f"s1 must be a string or numpy array, got {type(s1)}"
     assert isinstance(s2, str), f"s2 must be a string, got {type(s2)}"
-    assert len(s1) == len(s2), f"s1 and s2 must have the same length, got {len(s1)} and {len(s2)}"
+    assert len(s1) == len(
+        s2
+    ), f"s1 and s2 must have the same length, got {len(s1)} and {len(s2)}"
     s1_arr = np.frombuffer(s1.encode(), dtype=np.uint8) if isinstance(s1, str) else s1
     s2_arr = np.frombuffer(s2.encode(), dtype=np.uint8)
     return np.where(s1_arr != s2_arr)[0]
@@ -78,9 +82,15 @@ class E1Scorer:
         Returns:
             str: The masked sequence.
         """
-        return sequence[:mask_position] + self.predictor.batch_preparer.mask_token + sequence[mask_position + 1 :]
+        return (
+            sequence[:mask_position]
+            + self.predictor.batch_preparer.mask_token
+            + sequence[mask_position + 1 :]
+        )
 
-    def find_all_mutated_positions(self, parent_sequence: str, sequences: Sequence[str]) -> list[int]:
+    def find_all_mutated_positions(
+        self, parent_sequence: str, sequences: Sequence[str]
+    ) -> list[int]:
         """
         Find all positions in the parent that are mutated in at least one of the sequences.
 
@@ -92,7 +102,9 @@ class E1Scorer:
             list[int]:A list of positions that are mutated in at least one of the sequences.
         """
         encoded_parent = np.frombuffer(parent_sequence.encode(), dtype=np.uint8)
-        mismatches = [pos for seq in sequences for pos in find_mismatches(encoded_parent, seq)]
+        mismatches = [
+            pos for seq in sequences for pos in find_mismatches(encoded_parent, seq)
+        ]
         return sorted(set(mismatches))
 
     def score(
@@ -133,16 +145,20 @@ class E1Scorer:
             - All sequences must have the same length.
             - Parent sequence must have the same length as the mutants to score.
         """
-        assert parent_sequence.isalpha() and parent_sequence.isupper() and "X" not in parent_sequence, (
-            "Parent sequence must be uppercase and contain only A-Z except for X"
-        )
-        assert all(seq.isalpha() and seq.isupper() and "X" not in seq for seq in sequences), (
-            "Evaluated sequences must be uppercase and contain only A-Z except for X"
-        )
-        assert len({len(seq) for seq in sequences}) == 1, "All sequences must have the same length"
-        assert len(parent_sequence) == len(sequences[0]), (
-            "Parent sequence must have the same length as the mutants to score."
-        )
+        assert (
+            parent_sequence.isalpha()
+            and parent_sequence.isupper()
+            and "X" not in parent_sequence
+        ), "Parent sequence must be uppercase and contain only A-Z except for X"
+        assert all(
+            seq.isalpha() and seq.isupper() and "X" not in seq for seq in sequences
+        ), "Evaluated sequences must be uppercase and contain only A-Z except for X"
+        assert (
+            len({len(seq) for seq in sequences}) == 1
+        ), "All sequences must have the same length"
+        assert len(parent_sequence) == len(
+            sequences[0]
+        ), "Parent sequence must have the same length as the mutants to score."
 
         mutation_positions = self.find_all_mutated_positions(parent_sequence, sequences)
         aggregated_position_scores, context_id_to_index = self.get_position_scores(
@@ -151,7 +167,11 @@ class E1Scorer:
 
         encoded_parent = np.frombuffer(parent_sequence.encode(), dtype=np.uint8)
         scores = []
-        for i, seq in tqdm(enumerate(sequences), total=len(sequences), desc="Scoring sequences against parent"):
+        for i, seq in tqdm(
+            enumerate(sequences),
+            total=len(sequences),
+            desc="Scoring sequences against parent",
+        ):
             seq_id = sequence_ids[i] if sequence_ids is not None else i
             mismatch_positions = find_mismatches(encoded_parent, seq)
             seq_aa = [self.vocab[seq[pos]] for pos in mismatch_positions]
@@ -163,12 +183,22 @@ class E1Scorer:
             # )
             match context_reduction:
                 case "mean":
-                    scores.append({"id": seq_id, "context_id": "mean", "score": score.sum().item()})
+                    scores.append(
+                        {
+                            "id": seq_id,
+                            "context_id": "mean",
+                            "score": score.sum().item(),
+                        }
+                    )
                 case "none":
                     score = score.sum(dim=-1)
                     scores.extend(
                         [
-                            {"id": seq_id, "context_id": context_id, "score": score[i].item()}
+                            {
+                                "id": seq_id,
+                                "context_id": context_id,
+                                "score": score[i].item(),
+                            }
                             for context_id, i in context_id_to_index.items()
                         ]
                     )
@@ -206,12 +236,18 @@ class E1Scorer:
         # This is assured right now by the validity filter in the predictor.predict function.
         # This assumption is why we can all reduce on aggregated logits using SUM below.
         num_contexts = len(context_id_to_index)
-        logger.info(f"Predicting for {len(records_for_prediction)} records with {num_contexts} contexts")
+        logger.info(
+            f"Predicting for {len(records_for_prediction)} records with {num_contexts} contexts"
+        )
         records, record_ids = zip(*records_for_prediction)
-        predictions = list(self.predictor.predict(records, record_ids, context_seqs=context_seqs))
+        predictions = list(
+            self.predictor.predict(records, record_ids, context_seqs=context_seqs)
+        )
         parent_length = len(parent_sequence)
 
-        aggregated_logits = torch.zeros(num_contexts, parent_length, self.vocab_size, device=dist.get_device())
+        aggregated_logits = torch.zeros(
+            num_contexts, parent_length, self.vocab_size, device=dist.get_device()
+        )
         for p in predictions:
             context_index = context_id_to_index[p["context_id"]]
             match self.method:
@@ -227,15 +263,23 @@ class E1Scorer:
                     raise ValueError(f"Invalid scoring method: {self.method}")
 
         if dist.is_dist_initialized():
-            torch.distributed.all_reduce(aggregated_logits, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(
+                aggregated_logits, op=torch.distributed.ReduceOp.SUM
+            )
 
-        aggregated_log_probs = torch.nn.functional.log_softmax(aggregated_logits, dim=-1).cpu()
+        aggregated_log_probs = torch.nn.functional.log_softmax(
+            aggregated_logits, dim=-1
+        ).cpu()
 
         if context_reduction == "mean":
             aggregated_log_probs = aggregated_log_probs.mean(dim=0, keepdim=True)
 
         parent_sequence_to_ids = [self.vocab[aa] for aa in parent_sequence]
-        parent_log_probs = aggregated_log_probs[:, np.arange(parent_length), parent_sequence_to_ids]
-        aggregated_position_scores = aggregated_log_probs - parent_log_probs.unsqueeze(-1)
+        parent_log_probs = aggregated_log_probs[
+            :, np.arange(parent_length), parent_sequence_to_ids
+        ]
+        aggregated_position_scores = aggregated_log_probs - parent_log_probs.unsqueeze(
+            -1
+        )
 
         return aggregated_position_scores, context_id_to_index

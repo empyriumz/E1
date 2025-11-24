@@ -31,9 +31,17 @@ class E1BatchPreparer:
         self.data_prep_config = data_prep_config or DataPrepConfig()
         self.pad_token_id = self.tokenizer.token_to_id("<pad>")
         self.preserve_context_labels = preserve_context_labels
-        device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device("cpu")
+        device = (
+            torch.cuda.current_device()
+            if torch.cuda.is_available()
+            else torch.device("cpu")
+        )
         self.boundary_token_ids = torch.tensor(
-            [self.tokenizer.token_to_id(token) for token in ["<bos>", "<eos>", "1", "2", "<pad>"]], device=device
+            [
+                self.tokenizer.token_to_id(token)
+                for token in ["<bos>", "<eos>", "1", "2", "<pad>"]
+            ],
+            device=device,
         ).long()
         self.mask_token = "?"  # nosec
         self.mask_token_id = self.tokenizer.token_to_id(self.mask_token)
@@ -41,7 +49,10 @@ class E1BatchPreparer:
         self.vocab = self.tokenizer.get_vocab()
 
     def get_batch_kwargs(  # type: ignore[override]
-        self, sequences: list[str], device: torch.device = torch.device("cpu"), non_blocking: bool = False
+        self,
+        sequences: list[str],
+        device: torch.device = torch.device("cpu"),
+        non_blocking: bool = False,
     ) -> dict[str, torch.Tensor | list[str] | list[int]]:
         sequence_encodings = [self.prepare_multiseq(sequence) for sequence in sequences]
         return self.pad_encodings(sequence_encodings, device, non_blocking)
@@ -65,11 +76,15 @@ class E1BatchPreparer:
             "labels": self.pad_token_id,
         }.items():
             padded_encodings[key] = pad_sequence(
-                [enc[key] for enc in sequence_encodings], batch_first=True, padding_value=padding_value
+                [enc[key] for enc in sequence_encodings],
+                batch_first=True,
+                padding_value=padding_value,
             ).to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
         padded_encodings["context"] = [enc["context"] for enc in sequence_encodings]
-        padded_encodings["context_len"] = [enc["context_len"] for enc in sequence_encodings]
+        padded_encodings["context_len"] = [
+            enc["context_len"] for enc in sequence_encodings
+        ]
 
         return padded_encodings
 
@@ -81,13 +96,17 @@ class E1BatchPreparer:
                 " in the provided multi-sequence instance. Please remove some homologous sequences before trying again."
             )
 
-        single_sequence_encodings = [self.prepare_singleseq(sequence) for sequence in single_sequences]
+        single_sequence_encodings = [
+            self.prepare_singleseq(sequence) for sequence in single_sequences
+        ]
 
         num_tokens = [len(x["input_ids"]) for x in single_sequence_encodings]
         input_ids = torch.cat([x["input_ids"] for x in single_sequence_encodings])
         labels = torch.cat([x["labels"] for x in single_sequence_encodings])
 
-        within_seq_position_ids = torch.cat([encoding["position_ids"] for encoding in single_sequence_encodings])
+        within_seq_position_ids = torch.cat(
+            [encoding["position_ids"] for encoding in single_sequence_encodings]
+        )
         global_position_ids, ctx_len = [], 0
         for encoding in single_sequence_encodings:
             global_position_ids.append(encoding["position_ids"] + ctx_len)
@@ -98,7 +117,9 @@ class E1BatchPreparer:
 
         # Get multi-seq context & mask out all but last sequence in multi-seq instance if desired
         context_len = sum(num_tokens[:-1])
-        context = self.tokenizer.decode(input_ids[:context_len].tolist(), skip_special_tokens=False)
+        context = self.tokenizer.decode(
+            input_ids[:context_len].tolist(), skip_special_tokens=False
+        )
         if not self.preserve_context_labels:
             labels[:context_len] = self.pad_token_id
 
@@ -110,7 +131,9 @@ class E1BatchPreparer:
             == labels.shape
         ), "Input ids, sequence ids, within seq position ids, global position ids, and labels must have the same shape"
 
-        assert input_ids.shape[0] >= context_len, "Input ids must have at least as many tokens as the context length"
+        assert (
+            input_ids.shape[0] >= context_len
+        ), "Input ids must have at least as many tokens as the context length"
 
         return {
             "input_ids": input_ids,
@@ -124,7 +147,9 @@ class E1BatchPreparer:
 
     def prepare_singleseq(self, sequence: str) -> dict[str, torch.Tensor]:
         if not self.validate_sequence(sequence):
-            raise ValueError(f"Invalid sequence: {sequence}; Input sequence should contain [A-Z] or ? characters only")
+            raise ValueError(
+                f"Invalid sequence: {sequence}; Input sequence should contain [A-Z] or ? characters only"
+            )
 
         if len(sequence) > self.data_prep_config.max_num_positions_within_seq:
             raise ValueError(
@@ -133,7 +158,9 @@ class E1BatchPreparer:
 
         # Can also use `tokens = torch.tensor(self.tokenizer.encode(f"<bos>1{sequence}2<eos>").ids)`
         # but following is faster since our vocabulary is simple.
-        tokens = torch.tensor([self.vocab[token] for token in ["<bos>", "1", *sequence, "2", "<eos>"]])
+        tokens = torch.tensor(
+            [self.vocab[token] for token in ["<bos>", "1", *sequence, "2", "<eos>"]]
+        )
         position_ids = torch.arange(len(tokens))
 
         if self.data_prep_config.remove_X_tokens:

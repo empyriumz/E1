@@ -3,7 +3,11 @@ from typing import TypedDict
 
 try:
     import torch
-    from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
+    from torch.nn.attention.flex_attention import (
+        BlockMask,
+        create_block_mask,
+        flex_attention,
+    )
 
     if torch.cuda.is_available():
         flex_attention = torch.compile(flex_attention, dynamic=True)
@@ -27,7 +31,9 @@ def create_block_causal_mask_optimized(sequence_ids: torch.Tensor) -> BlockMask:
         )
 
     batch_size, seqlen = sequence_ids.shape
-    return create_block_mask(document_mask, batch_size, 1, seqlen, seqlen, device=sequence_ids.device)
+    return create_block_mask(
+        document_mask, batch_size, 1, seqlen, seqlen, device=sequence_ids.device
+    )
 
 
 def flex_attention_func(
@@ -37,7 +43,9 @@ def flex_attention_func(
     score_mod: Callable | None = None,
     block_mask: BlockMask | None = None,
 ) -> torch.Tensor:
-    assert flex_attention is not None, "Flex Attention is not available in this environment"
+    assert (
+        flex_attention is not None
+    ), "Flex Attention is not available in this environment"
     assert score_mod is None, "Score mod is not supported yet"
     query_states = query_states.transpose(1, 2).contiguous()  # (bs, nh, seqlen, hs)
     key_states = key_states.transpose(1, 2).contiguous()  # (bs, nkv, seqlen, hs)

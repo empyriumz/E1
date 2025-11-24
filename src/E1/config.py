@@ -87,11 +87,19 @@ class E1Config(PretrainedConfig):
                 )
                 self.vocab_size = vocab_size
             elif vocab_size > self.vocab_size:
-                logger.warning(f"Using vocab_size {vocab_size} instead of smaller {self.vocab_size} from tokenizer.")
+                logger.warning(
+                    f"Using vocab_size {vocab_size} instead of smaller {self.vocab_size} from tokenizer."
+                )
                 self.vocab_size = vocab_size
         if pad_token_id is not None and pad_token_id != self.pad_token_id:
-            logger.warning(f"Ignoring pad_token_id. Using {self.pad_token_id} from tokenizer")
+            logger.warning(
+                f"Ignoring pad_token_id. Using {self.pad_token_id} from tokenizer"
+            )
         if bos_token_id is not None and bos_token_id != self.bos_token_id:
-            logger.warning(f"Ignoring bos_token_id. Using {self.bos_token_id} from tokenizer")
+            logger.warning(
+                f"Ignoring bos_token_id. Using {self.bos_token_id} from tokenizer"
+            )
         if eos_token_id is not None and eos_token_id != self.eos_token_id:
-            logger.warning(f"Ignoring eos_token_id. Using {self.eos_token_id} from tokenizer")
+            logger.warning(
+                f"Ignoring eos_token_id. Using {self.eos_token_id} from tokenizer"
+            )

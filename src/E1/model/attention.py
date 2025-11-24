@@ -37,24 +37,34 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
 class RotaryPositionalEmbedding(nn.Module):
     def __init__(
-        self, dim: int, max_position_embeddings: int = 2048, base: int = 10000, device: torch.device | None = None
+        self,
+        dim: int,
+        max_position_embeddings: int = 2048,
+        base: int = 10000,
+        device: torch.device | None = None,
     ):
         super().__init__()
 
         self.dim = dim
         self.base = base
         self.max_position_embeddings = max_position_embeddings
-        inv_freq = base ** -(torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim)
+        inv_freq = base ** -(
+            torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim
+        )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_sin_cos_cache(seq_len=max_position_embeddings, device=self.inv_freq.device)
+        self._set_sin_cos_cache(
+            seq_len=max_position_embeddings, device=self.inv_freq.device
+        )
 
     @staticmethod
     def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -73,7 +83,11 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer("sin_cached", angles.sin(), persistent=False)
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.LongTensor, seq_len: int | None = None
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        position_ids: torch.LongTensor,
+        seq_len: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # x: [bsz, seq_len, num_attention_heads, head_size]
         device, dtype = q.device, q.dtype
@@ -117,15 +131,24 @@ class Attention(nn.Module):
                 f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
                 f" and `num_heads`: {self.num_heads})."
             )
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        self.q_proj = nn.Linear(
+            self.hidden_size, self.num_heads * self.head_dim, bias=False
+        )
+        self.k_proj = nn.Linear(
+            self.hidden_size, self.num_kv_heads * self.head_dim, bias=False
+        )
+        self.v_proj = nn.Linear(
+            self.hidden_size, self.num_kv_heads * self.head_dim, bias=False
+        )
+        self.o_proj = nn.Linear(
+            self.num_heads * self.head_dim, self.hidden_size, bias=False
+        )
 
         if self.config.global_attention_every_n_layers > 0:
             self.layer_type = (
                 AttentionLayerType.GLOBAL
-                if (self.layer_idx + 1) % self.config.global_attention_every_n_layers == 0
+                if (self.layer_idx + 1) % self.config.global_attention_every_n_layers
+                == 0
                 else AttentionLayerType.WITHIN_SEQ
             )
         else:
@@ -143,7 +166,9 @@ class Attention(nn.Module):
         )
 
         self.rotary_emb = RotaryPositionalEmbedding(
-            self.head_dim, max_position_embeddings=self.max_position_embeddings, base=self.rope_theta
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
         )
 
     def prepare_qkv(
@@ -167,10 +192,14 @@ class Attention(nn.Module):
             key_states = key_states.clamp(-self.clip_qkv, self.clip_qkv)
             val_states = val_states.clamp(-self.clip_qkv, self.clip_qkv)
 
-        query_states, key_states = self.rotary_emb(query_states, key_states, position_ids)
+        query_states, key_states = self.rotary_emb(
+            query_states, key_states, position_ids
+        )
 
         if use_cache and past_key_value is not None:
-            key_states, val_states = past_key_value.update(key_states, val_states, self.layer_idx)
+            key_states, val_states = past_key_value.update(
+                key_states, val_states, self.layer_idx
+            )
 
         # In PEFT, usually we cast the layer norms in float32 for training stability reasons
         # therefore the input hidden states gets silently casted in float32. Hence, we need
@@ -204,14 +233,18 @@ class Attention(nn.Module):
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, DynamicCache | None]:
         is_cache_prefilled = (
-            use_cache and past_key_value is not None and past_key_value.get_seq_length(self.layer_idx) > 0
+            use_cache
+            and past_key_value is not None
+            and past_key_value.get_seq_length(self.layer_idx) > 0
         )
 
         query_states, key_states, val_states = self.prepare_qkv(
             hidden_states=hidden_states,
-            position_ids=within_seq_position_ids
-            if self.layer_type == AttentionLayerType.WITHIN_SEQ
-            else global_position_ids,
+            position_ids=(
+                within_seq_position_ids
+                if self.layer_type == AttentionLayerType.WITHIN_SEQ
+                else global_position_ids
+            ),
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
@@ -254,7 +287,9 @@ class Attention(nn.Module):
             case AttentionMethod.FLEX:
                 f = self._flex_attn
             case _:
-                raise ValueError(f"No attention implementation found for {attention_type}")
+                raise ValueError(
+                    f"No attention implementation found for {attention_type}"
+                )
         return f(
             query_states=query_states,
             key_states=key_states,
@@ -277,7 +312,9 @@ class Attention(nn.Module):
 
         Calls the public API of flash attention and deals with padding tokens if any are present.
         """
-        assert not output_attentions, "Flash attention doesn't support returning attention masks"
+        assert (
+            not output_attentions
+        ), "Flash attention doesn't support returning attention masks"
         bsz, q_len = query_states.shape[0], query_states.shape[1]
         _, kv_len = key_states.shape[0], key_states.shape[1]
 
@@ -287,7 +324,9 @@ class Attention(nn.Module):
                 # Assumes query contain only one sequence
                 # and all tokens in query (except padding) will attend to all tokens in KV
                 first_token_id = sequence_ids[:, 0].unsqueeze(1)
-                k_sequence_ids = torch.cat([first_token_id.expand(bsz, kv_len - q_len), sequence_ids], dim=-1)
+                k_sequence_ids = torch.cat(
+                    [first_token_id.expand(bsz, kv_len - q_len), sequence_ids], dim=-1
+                )
             else:
                 k_sequence_ids = sequence_ids
         else:
@@ -307,7 +346,11 @@ class Attention(nn.Module):
             )
         else:
             attn_output = varlen_flex_attention_func(
-                query_states, key_states, val_states, q_sequence_ids=q_sequence_ids, k_sequence_ids=k_sequence_ids
+                query_states,
+                key_states,
+                val_states,
+                q_sequence_ids=q_sequence_ids,
+                k_sequence_ids=k_sequence_ids,
             )
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
@@ -323,10 +366,28 @@ class Attention(nn.Module):
         output_attentions: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         bsz, q_len = query_states.shape[0], query_states.shape[1]
-        flex_attention_args = attention_args.get("flex_attention_args", None) if attention_args is not None else None
-        block_mask = flex_attention_args.get("block_mask", None) if flex_attention_args is not None else None
-        score_mod = flex_attention_args.get("score_mod", None) if flex_attention_args is not None else None
-        outputs = flex_attention_func(query_states, key_states, val_states, score_mod=score_mod, block_mask=block_mask)
+        flex_attention_args = (
+            attention_args.get("flex_attention_args", None)
+            if attention_args is not None
+            else None
+        )
+        block_mask = (
+            flex_attention_args.get("block_mask", None)
+            if flex_attention_args is not None
+            else None
+        )
+        score_mod = (
+            flex_attention_args.get("score_mod", None)
+            if flex_attention_args is not None
+            else None
+        )
+        outputs = flex_attention_func(
+            query_states,
+            key_states,
+            val_states,
+            score_mod=score_mod,
+            block_mask=block_mask,
+        )
 
         outputs = outputs.reshape(bsz, q_len, self.hidden_size).contiguous()
         return outputs, None

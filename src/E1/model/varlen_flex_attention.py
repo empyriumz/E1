@@ -17,7 +17,9 @@ except ImportError:
     flex_attention = None
 
 
-def block_min_max_seq_ids(SLEN: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
+def block_min_max_seq_ids(
+    SLEN: torch.Tensor, block_size: int = 128
+) -> tuple[torch.Tensor, torch.Tensor]:
     device = SLEN.device
     total_tokens = torch.sum(SLEN)
     B = (total_tokens + block_size - 1) // block_size
@@ -31,8 +33,12 @@ def block_min_max_seq_ids(SLEN: torch.Tensor, block_size: int = 128) -> tuple[to
     total_tokens = cum[-1].item()
 
     # Block start/end offsets [start, end) in token index space
-    block_starts = torch.arange(0, B * block_size, block_size, device=device, dtype=torch.long)  # (B,)
-    block_ends = torch.minimum(block_starts + block_size, torch.tensor(total_tokens, device=device))  # (B,)
+    block_starts = torch.arange(
+        0, B * block_size, block_size, device=device, dtype=torch.long
+    )  # (B,)
+    block_ends = torch.minimum(
+        block_starts + block_size, torch.tensor(total_tokens, device=device)
+    )  # (B,)
 
     # MIN_SEQ_ID[i] = first sequence whose end > block_start
     # searchsorted with right=True returns first index where cum > value
@@ -40,13 +46,17 @@ def block_min_max_seq_ids(SLEN: torch.Tensor, block_size: int = 128) -> tuple[to
 
     # MAX_SEQ_ID[i] = sequence containing the last token in the block (block_end - 1)
     # For empty tail beyond total_tokens we already clipped block_ends.
-    last_token_in_block = torch.clamp(block_ends - 1, min=0)  # valid only if block has at least 1 token
+    last_token_in_block = torch.clamp(
+        block_ends - 1, min=0
+    )  # valid only if block has at least 1 token
     MAX_SEQ_ID = torch.searchsorted(cum, last_token_in_block, right=True)
 
     return MIN_SEQ_ID, MAX_SEQ_ID
 
 
-def get_overlapping_blocks(SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def get_overlapping_blocks(
+    SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     MIN_Q, MAX_Q = block_min_max_seq_ids(SLEN_Q)
     MIN_K, MAX_K = block_min_max_seq_ids(SLEN_K)
 
@@ -72,7 +82,9 @@ def direct_block_mask(SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor) -> BlockMask:
     q_doc_id = torch.repeat_interleave(SLEN_Q)
     k_doc_id = torch.repeat_interleave(SLEN_K)
 
-    def doc_mask(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+    def doc_mask(
+        b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+    ) -> torch.Tensor:
         return q_doc_id[q_idx] == k_doc_id[kv_idx]
 
     total_q_len = q_doc_id.shape[0]
@@ -91,16 +103,22 @@ def doc_id_mask(SLEN_Q: torch.Tensor, SLEN_K: torch.Tensor) -> BlockMask:
     q_doc_id = torch.repeat_interleave(SLEN_Q)
     k_doc_id = torch.repeat_interleave(SLEN_K)
 
-    def doc_mask(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+    def doc_mask(
+        b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+    ) -> torch.Tensor:
         return q_doc_id[q_idx] == k_doc_id[kv_idx]
 
     total_q_len = q_doc_id.shape[0]
     total_k_len = k_doc_id.shape[0]
 
-    return create_block_mask(doc_mask, 1, 1, total_q_len, total_k_len, BLOCK_SIZE=128, device=SLEN_Q.device)
+    return create_block_mask(
+        doc_mask, 1, 1, total_q_len, total_k_len, BLOCK_SIZE=128, device=SLEN_Q.device
+    )
 
 
-block_mask_creator = direct_block_mask if os.getenv("FAST_BLOCK_MASK", "1") == "1" else doc_id_mask
+block_mask_creator = (
+    direct_block_mask if os.getenv("FAST_BLOCK_MASK", "1") == "1" else doc_id_mask
+)
 
 
 def varlen_flex_attention_func(
@@ -118,7 +136,9 @@ def varlen_flex_attention_func(
         indices_q,
         (cu_seqlens_q, cu_seqlens_k),
         (max_seqlen_in_batch_q, max_seqlen_in_batch_k),
-    ) = _unpad_input(query_states, key_states, value_states, q_sequence_ids, k_sequence_ids)
+    ) = _unpad_input(
+        query_states, key_states, value_states, q_sequence_ids, k_sequence_ids
+    )
 
     query_states = query_states.unsqueeze(0).transpose(1, 2).contiguous()
     key_states = key_states.unsqueeze(0).transpose(1, 2).contiguous()
@@ -136,6 +156,8 @@ def varlen_flex_attention_func(
         enable_gqa=query_states.shape[1] != key_states.shape[1],
     )
 
-    attn_output = pad_input(attn_output_unpad.transpose(1, 2).squeeze(0), indices_q, batch_size, q_len)
+    attn_output = pad_input(
+        attn_output_unpad.transpose(1, 2).squeeze(0), indices_q, batch_size, q_len
+    )
 
     return attn_output
