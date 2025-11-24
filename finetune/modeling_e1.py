@@ -43,18 +43,14 @@ try:
 
     # Do not compile flex_attention during training as it causes illegal memory access
     # errors in the backward pass. Compilation can be enabled for inference only.
-    # if torch.cuda.is_available():
-    #     if os.name == 'posix':
-    #         print("Compiling flex attention")
-    #         flex_attention = torch.compile(flex_attention, dynamic=True)
-    #     else:
-    #         print("Not compiling flex attention, detected non-Linux environment")
+    _flex_attention_compiled = False
 
 except ImportError:
     logger.warning(
         "Failed to import flex attention; Will be using PyTorch attention instead"
     )
     flex_attention = None
+    _flex_attention_compiled = False
 
 try:
     from kernels import get_kernel
@@ -73,6 +69,55 @@ def is_flash_attention_available() -> bool:
         and flash_attn_varlen_func is not None
         and (os.getenv("USE_FLASH_ATTN", "1") == "1")
     )
+
+
+def compile_flex_attention_if_enabled(enabled: bool = False) -> bool:
+    """
+    Compile flex_attention for inference if enabled.
+
+    Note: Compilation should only be enabled during inference, not training,
+    as it causes illegal memory access errors in the backward pass.
+
+    Args:
+        enabled: Whether to compile flex_attention
+
+    Returns:
+        bool: True if compilation was successful or already compiled, False otherwise
+    """
+    global flex_attention, _flex_attention_compiled
+
+    if not enabled:
+        return False
+
+    if _flex_attention_compiled:
+        logger.info("flex_attention is already compiled")
+        return True
+
+    if flex_attention is None:
+        logger.warning("flex_attention is not available, cannot compile")
+        return False
+
+    if not torch.cuda.is_available():
+        logger.warning("CUDA is not available, skipping flex_attention compilation")
+        return False
+
+    if os.name != "posix":
+        logger.warning("Not compiling flex_attention, detected non-Linux environment")
+        return False
+
+    try:
+        logger.info(
+            "Compiling flex_attention for inference (this may take a moment)..."
+        )
+        flex_attention = torch.compile(flex_attention, dynamic=True)
+        _flex_attention_compiled = True
+        logger.info("flex_attention compilation successful")
+        return True
+    except Exception as e:
+        logger.warning(
+            f"Failed to compile flex_attention: {e}. Will use uncompiled version."
+        )
+        return False
 
 
 class FlexAttentionArgs(TypedDict, total=False):
@@ -474,25 +519,38 @@ block_mask_creator = (
 )
 PAD_TOKEN_ID = 0
 
+# Cache tokenizer to avoid repeated downloads
+_tokenizer_cache: Tokenizer | None = None
+
 
 def get_tokenizer() -> Tokenizer:
+    global _tokenizer_cache
+
+    # Return cached tokenizer if available
+    if _tokenizer_cache is not None:
+        return _tokenizer_cache
+
     try:
         fname = os.path.join(os.path.dirname(__file__), "tokenizer.json")
         tokenizer: Tokenizer = Tokenizer.from_file(fname)
     except:
-        print(
+        logger.info(
             "E1 Tokenizer not found in local directory, downloading from Hugging Face"
         )
         from huggingface_hub import hf_hub_download
 
+        # hf_hub_download caches files, so subsequent calls will use cached version
         fname = hf_hub_download(
             repo_id="Synthyra/Profluent-E1-150M", filename="tokenizer.json"
         )
         tokenizer: Tokenizer = Tokenizer.from_file(fname)
+
     assert (
         tokenizer.padding["pad_id"] == PAD_TOKEN_ID
     ), f"Padding token id must be {PAD_TOKEN_ID}, but got {tokenizer.padding['pad_id']}"
 
+    # Cache the tokenizer for future use
+    _tokenizer_cache = tokenizer
     return tokenizer
 
 
@@ -702,11 +760,32 @@ class E1Config(PretrainedConfig):
         clip_qkv=None,
         **kwargs,
     ) -> None:
-        tokenizer = get_tokenizer()
+        # Only load tokenizer if token IDs are not provided
+        # This avoids loading tokenizer when loading from saved configs (e.g., during checkpoint saving)
+        # Check both function args and kwargs (kwargs take precedence)
+        final_pad_token_id = kwargs.get("pad_token_id", pad_token_id)
+        final_bos_token_id = kwargs.get("bos_token_id", bos_token_id)
+        final_eos_token_id = kwargs.get("eos_token_id", eos_token_id)
+
+        if (
+            final_pad_token_id is None
+            or final_bos_token_id is None
+            or final_eos_token_id is None
+        ):
+            tokenizer = get_tokenizer()
+            final_pad_token_id = final_pad_token_id or tokenizer.token_to_id("<pad>")
+            final_bos_token_id = final_bos_token_id or tokenizer.token_to_id("<bos>")
+            final_eos_token_id = final_eos_token_id or tokenizer.token_to_id("<eos>")
+
+        # Remove token IDs from kwargs if they were there, since we'll pass them explicitly
+        kwargs.pop("pad_token_id", None)
+        kwargs.pop("bos_token_id", None)
+        kwargs.pop("eos_token_id", None)
+
         super().__init__(
-            pad_token_id=tokenizer.token_to_id("<pad>"),
-            bos_token_id=tokenizer.token_to_id("<bos>"),
-            eos_token_id=tokenizer.token_to_id("<eos>"),
+            pad_token_id=final_pad_token_id,
+            bos_token_id=final_bos_token_id,
+            eos_token_id=final_eos_token_id,
             tie_word_embeddings=tie_word_embeddings,
             torch_dtype=torch_dtype,
             **kwargs,

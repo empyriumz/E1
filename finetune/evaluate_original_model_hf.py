@@ -7,7 +7,11 @@ from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 from tqdm import tqdm
 from Bio import SeqIO
-from modeling_e1 import E1BatchPreparer, E1ForMaskedLM
+from modeling_e1 import (
+    E1BatchPreparer,
+    E1ForMaskedLM,
+    compile_flex_attention_if_enabled,
+)
 
 # Use existing MSA sampling from E1 package
 from E1.msa_sampling import sample_context
@@ -429,6 +433,14 @@ def evaluate(config: Dict, output_path: Optional[str] = None):
         model_name, device, model_dtype=model_dtype
     )
 
+    # Compile flex_attention if enabled (for inference only)
+    compile_flex_attention = train_conf.get("compile_flex_attention", False)
+    if compile_flex_attention:
+        logger.info("Attempting to compile flex_attention for inference...")
+        compile_flex_attention_if_enabled(enabled=True)
+    else:
+        logger.info("Skipping flex_attention compilation (default behavior)")
+
     # Get MSA directory from config (optional)
     msa_dir = data_conf.get("msa_dir", None)
     if msa_dir:
@@ -455,6 +467,7 @@ def evaluate(config: Dict, output_path: Optional[str] = None):
     logger.info("=" * 80)
     logger.info(f"Model (HuggingFace): {model_name}")
     logger.info(f"Model dtype: {model_dtype if model_dtype else 'float32'}")
+    logger.info(f"Compile flex_attention: {compile_flex_attention}")
     logger.info(f"MLM probability: {mlm_probability}")
     logger.info(f"Input file: {input_file}")
     logger.info(

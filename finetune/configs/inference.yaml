@@ -11,4 +11,5 @@ training:
   mlm_probability: 0.15
   max_eval_samples: null  # Optional: limit number of sequences if memory is an issue
   model_dtype: bfloat16  # or "float16", "bfloat16"
+  compile_flex_attention: true  # Compile flex_attention for inference (default: false, only for inference)
   output_dir: "results/hf_rare_earth_evaluation"
