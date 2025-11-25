@@ -330,18 +330,21 @@ def create_compute_metrics(
         # Note: The ratio is low because:
         # - MLM probability (~15%) applies only to query sequence positions
         # - Query sequence is only part of total (context + query sequences)
-        # - So ~3-5% of total positions = ~15% of query sequence is expected
+        # - With MSA context (max_num_samples=64-256), query can be 5-15% of total
+        # - So ~0.75-2.25% of total positions = ~15% of query sequence is expected
         masked_ratio = (
             num_masked_positions / total_positions if total_positions > 0 else 0
         )
-        expected_ratio_low = mlm_probability * 0.15  # ~2.25% if query is ~15% of total
-        expected_ratio_high = mlm_probability * 0.30  # ~4.5% if query is ~30% of total
+        # With MSA context, query is typically 5-15% of total tokens
+        # (depends on max_num_samples and max_token_length config)
+        expected_ratio_low = mlm_probability * 0.05  # ~0.75% if query is ~5% of total (many context seqs)
+        expected_ratio_high = mlm_probability * 0.30  # ~4.5% if query is ~30% of total (few context seqs)
 
         logger.info(
             f"Masked positions: {num_masked_positions}/{total_positions} ({100*masked_ratio:.2f}%). "
             f"Expected ~{mlm_probability*100:.1f}% of query sequence "
             f"(~{100*expected_ratio_low:.1f}-{100*expected_ratio_high:.1f}% of total positions, "
-            f"depending on context/query ratio)."
+            f"depending on MSA context size)."
         )
 
         # If masked ratio is suspiciously high, it might indicate we're including context sequences
@@ -351,8 +354,11 @@ def create_compute_metrics(
                 f"This might indicate context sequence positions are being included."
             )
         elif masked_ratio < expected_ratio_low * 0.5:
+            # Only warn if extremely low (< 0.375% with 15% MLM prob)
+            # This could indicate empty/very short query sequences
             logger.warning(
-                f"Unusually low masked ratio ({100*masked_ratio:.2f}%). "
+                f"Very low masked ratio ({100*masked_ratio:.2f}%). "
+                f"This may indicate very long context sequences or short query sequences. "
                 f"Expected at least ~{100*expected_ratio_low:.1f}% of total positions."
             )
 

@@ -16,7 +16,7 @@ training:
   resume_from_checkpoint: null  # Path to checkpoint folder to resume training from
                                 # Set to null to start fresh training
   save_best_checkpoint: true    # Whether to save the best checkpoint folder for resuming training later
-  epochs: 15
+  epochs: 20
   batch_size: 4  # Start smaller due to longer sequences with MSA context
   accum_steps: 4  # Increase gradient accumulation to maintain effective batch size
   learning_rate: 0.00015
@@ -33,13 +33,13 @@ training:
   
   # Evaluation and logging settings
   eval_strategy: "steps"  # Options: "no", "steps", "epoch"
-  eval_steps: 20  # Evaluate every N training steps
+  eval_steps: 200  # Evaluate every N training steps
   eval_batch_size: 1  # Evaluation batch size (smaller for longer sequences with MSA context)
   max_eval_samples: 5000  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
   eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
                                 # Lower values use less GPU memory but may be slightly slower.
   logging_strategy: "steps"  # Options: "no", "steps", "epoch"
-  logging_steps: 20  # Log metrics every N training steps
+  logging_steps: 40  # Log metrics every N training steps
   
   # Early stopping configuration
   early_stopping:
