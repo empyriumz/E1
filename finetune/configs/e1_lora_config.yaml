@@ -1,6 +1,6 @@
 general:
   seed: 1
-  gpu_id: "0"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
+  gpu_id: "all"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
 
 data:
   homologs_dir: "/host/MMseqs2/rare_earth_results/a3m_files"  # Directory containing .a3m MSA files
@@ -16,10 +16,10 @@ training:
   resume_from_checkpoint: null  # Path to checkpoint folder to resume training from
                                 # Set to null to start fresh training
   save_best_checkpoint: true    # Whether to save the best checkpoint folder for resuming training later
-  epochs: 10
+  epochs: 15
   batch_size: 4  # Start smaller due to longer sequences with MSA context
   accum_steps: 4  # Increase gradient accumulation to maintain effective batch size
-  learning_rate: 0.0002
+  learning_rate: 0.00015
   weight_decay: 0.01  # L2 regularization weight decay. Range: 0.0 (no regularization) to 0.1 (strong regularization)
   optimizer: "adamw_torch_fused"  # Options: "adamw_hf", "adamw_torch", "adamw_torch_fused" (fastest), "adamw_apex_fused", "sgd", "adafactor"
   lr_scheduler_type: "cosine"  # Options: "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"
@@ -33,9 +33,9 @@ training:
   
   # Evaluation and logging settings
   eval_strategy: "steps"  # Options: "no", "steps", "epoch"
-  eval_steps: 100  # Evaluate every N training steps
-  eval_batch_size: 4  # Evaluation batch size (smaller for longer sequences with MSA context)
-  max_eval_samples: 1500  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
+  eval_steps: 200  # Evaluate every N training steps
+  eval_batch_size: 8  # Evaluation batch size (smaller for longer sequences with MSA context)
+  max_eval_samples: 5000  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
   eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
                                 # Lower values use less GPU memory but may be slightly slower.
   logging_strategy: "steps"  # Options: "no", "steps", "epoch"

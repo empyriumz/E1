@@ -763,10 +763,15 @@ class E1Config(PretrainedConfig):
         # Only load tokenizer if token IDs are not provided
         # This avoids loading tokenizer when loading from saved configs (e.g., during checkpoint saving)
         # Check both function args and kwargs (kwargs take precedence)
+        # When loading from saved config, these values come from kwargs
         final_pad_token_id = kwargs.get("pad_token_id", pad_token_id)
         final_bos_token_id = kwargs.get("bos_token_id", bos_token_id)
         final_eos_token_id = kwargs.get("eos_token_id", eos_token_id)
+        final_vocab_size = kwargs.get("vocab_size", vocab_size)
 
+        # Load tokenizer only if needed for token IDs
+        # When loading from saved config, token IDs and vocab_size are already in kwargs
+        tokenizer = None
         if (
             final_pad_token_id is None
             or final_bos_token_id is None
@@ -777,10 +782,11 @@ class E1Config(PretrainedConfig):
             final_bos_token_id = final_bos_token_id or tokenizer.token_to_id("<bos>")
             final_eos_token_id = final_eos_token_id or tokenizer.token_to_id("<eos>")
 
-        # Remove token IDs from kwargs if they were there, since we'll pass them explicitly
+        # Remove token IDs and vocab_size from kwargs if they were there, since we'll handle them explicitly
         kwargs.pop("pad_token_id", None)
         kwargs.pop("bos_token_id", None)
         kwargs.pop("eos_token_id", None)
+        kwargs.pop("vocab_size", None)  # Remove vocab_size from kwargs since we handle it separately
 
         super().__init__(
             pad_token_id=final_pad_token_id,
@@ -816,7 +822,18 @@ class E1Config(PretrainedConfig):
         self.clip_qkv = clip_qkv
         self.global_attention_every_n_layers = global_attention_every_n_layers
 
-        self.vocab_size = tokenizer.get_vocab_size()
+        # Get vocab_size from tokenizer if available, otherwise use provided vocab_size
+        # When loading from saved config, vocab_size should already be in the config (via final_vocab_size)
+        if tokenizer is not None:
+            # Tokenizer was loaded, use it to get vocab_size
+            self.vocab_size = tokenizer.get_vocab_size()
+        elif final_vocab_size is not None:
+            # vocab_size provided in config (e.g., when loading from saved config)
+            self.vocab_size = final_vocab_size
+        else:
+            # Neither tokenizer nor vocab_size available, need to load tokenizer
+            tokenizer = get_tokenizer()
+            self.vocab_size = tokenizer.get_vocab_size()
         self.gradient_checkpointing = gradient_checkpointing
         self.no_ffn_gradient_checkpointing = no_ffn_gradient_checkpointing
 
