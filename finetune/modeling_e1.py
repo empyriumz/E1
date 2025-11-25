@@ -786,7 +786,9 @@ class E1Config(PretrainedConfig):
         kwargs.pop("pad_token_id", None)
         kwargs.pop("bos_token_id", None)
         kwargs.pop("eos_token_id", None)
-        kwargs.pop("vocab_size", None)  # Remove vocab_size from kwargs since we handle it separately
+        kwargs.pop(
+            "vocab_size", None
+        )  # Remove vocab_size from kwargs since we handle it separately
 
         super().__init__(
             pad_token_id=final_pad_token_id,

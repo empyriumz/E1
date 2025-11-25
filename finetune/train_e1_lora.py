@@ -5,7 +5,6 @@ import torch
 import numpy as np
 import shutil
 import glob
-import yaml
 from typing import List, Optional
 from datasets import Dataset
 
@@ -15,7 +14,7 @@ from transformers import (
     EarlyStoppingCallback,
 )
 
-from training.e1_dataset import create_e1_datasets_from_config
+from training.e1_dataset import create_e1_datasets_from_config, ConcatE1MSADataset
 from training.e1_data_collator import E1DataCollatorForMLM
 from training.e1_finetune_utils import load_e1_model
 from training.finetune_utils import (
@@ -24,6 +23,9 @@ from training.finetune_utils import (
     save_model,
     ClearCacheCallback,
     MetricRenameCallback,
+    process_config,
+    MSADatasetEpochCallback,
+    CompileFlexAttentionForEvalCallback,
 )
 
 # Module-level logger (will be configured in train function)
@@ -644,52 +646,53 @@ def train(config, output_path=None):
 
     logger.info("Loading data...")
 
+    # Get validation MSA sampling config (for fair comparison with evaluation)
+    validation_msa_sampling_conf = train_conf.get("validation_msa_sampling", {})
+
     # Create datasets using E1MSADataset
     homologs_train, homologs_val, swissprot_train, swissprot_val = (
         create_e1_datasets_from_config(
             data_conf=data_conf,
             general_conf=general_conf,
             msa_sampling_conf=msa_sampling_conf,
+            validation_msa_sampling_conf=validation_msa_sampling_conf,
         )
     )
 
     logger.info(f"Homologs: Train {len(homologs_train)}, Val {len(homologs_val)}")
     logger.info(f"SwissProt: Train {len(swissprot_train)}, Val {len(swissprot_val)}")
 
-    # Combine training datasets
-    # For E1, we need to combine the datasets properly
-    # Since E1MSADataset returns strings, we can combine them
-    train_sequences = []
+    # Create dynamic training dataset using ConcatE1MSADataset
+    # This allows different MSA samples each epoch (data augmentation)
+    train_datasets = []
     train_sources = []
 
-    # Add homolog sequences
-    for i in range(len(homologs_train)):
-        train_sequences.append(homologs_train[i])
+    if len(homologs_train) > 0:
+        train_datasets.append(homologs_train)
         train_sources.append("Homologs")
 
-    # Add SwissProt sequences
-    for i in range(len(swissprot_train)):
-        train_sequences.append(swissprot_train[i])
+    if len(swissprot_train) > 0:
+        train_datasets.append(swissprot_train)
         train_sources.append("SwissProt")
 
-    # Shuffle
-    import random
+    # ConcatE1MSADataset defers MSA sampling to __getitem__ time
+    # enabling different context samples per epoch
+    train_set = ConcatE1MSADataset(
+        datasets=train_datasets,
+        sources=train_sources,
+        shuffle=True,
+        seed=general_conf["seed"],
+    )
 
-    random.seed(general_conf["seed"])
-    combined = list(zip(train_sequences, train_sources))
-    random.shuffle(combined)
-    train_sequences, train_sources = zip(*combined)
-    train_sequences = list(train_sequences)
-    train_sources = list(train_sources)
-
-    # Create HuggingFace Dataset from list of strings
-    train_set = Dataset.from_dict({"text": train_sequences})
+    logger.info(f"Created dynamic training dataset with {len(train_set)} total samples")
+    logger.info("  MSA sampling happens at access time (different samples per epoch)")
 
     # Prepare validation data
+    # Validation uses static extraction since we want consistent evaluation
     val_sequences = []
     val_sources = []
 
-    # Add homolog validation sequences
+    # Add homolog validation sequences (sampled with validation MSA params)
     for i in range(len(homologs_val)):
         val_sequences.append(homologs_val[i])
         val_sources.append("Homologs")
@@ -845,6 +848,8 @@ def train(config, output_path=None):
     callbacks_list = [
         ClearCacheCallback(),
         MetricRenameCallback(),
+        MSADatasetEpochCallback(train_set),  # Enable dynamic MSA sampling per epoch
+        CompileFlexAttentionForEvalCallback(),  # Log reminder about evaluation settings
     ]
 
     # Add early stopping callback if enabled
@@ -857,14 +862,13 @@ def train(config, output_path=None):
         )
 
     # Custom data collator function that extracts text field
-    # We'll store input_ids and sequence_ids in the batch so they can be accessed later
+    # Handles both dict format (from ConcatE1MSADataset) and HuggingFace Dataset format
     def collate_fn(examples):
         # Extract text strings from examples
+        # ConcatE1MSADataset returns {"text": ..., "source": ...}
+        # HuggingFace Dataset (validation) returns {"text": ...}
         texts = [ex["text"] for ex in examples]
         batch = data_collator(texts)
-        # Store input_ids and sequence_ids for potential use in metrics
-        # Note: These won't be automatically passed to compute_metrics via include_for_metrics
-        # but we can try to access them if needed
         return batch
 
     # Preprocess logits to ensure they're in the right format for metrics
@@ -991,6 +995,7 @@ def train(config, output_path=None):
 
 if __name__ == "__main__":
     import time
+    from pathlib import Path
 
     start_time = time.time()
     parser = argparse.ArgumentParser(description="Run E1 LoRA Fine-tuning")
@@ -1003,10 +1008,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Load config
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
+    # Extract config name from config path for directory structuring
+    config_path = Path(args.config)
+    config_name = config_path.stem  # e.g., "e1_lora_config" from "e1_lora_config.yaml"
 
-    train(config)
+    # Load config and setup output path using process_config
+    config, output_path = process_config(args.config, config_name=config_name)
+
+    train(config, output_path=output_path)
     logger = logging.getLogger(__name__)
     logger.info(f"Total time used: {(time.time() - start_time)/60:.1f} minutes")

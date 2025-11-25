@@ -33,8 +33,8 @@ training:
   
   # Evaluation and logging settings
   eval_strategy: "steps"  # Options: "no", "steps", "epoch"
-  eval_steps: 200  # Evaluate every N training steps
-  eval_batch_size: 8  # Evaluation batch size (smaller for longer sequences with MSA context)
+  eval_steps: 20  # Evaluate every N training steps
+  eval_batch_size: 1  # Evaluation batch size (smaller for longer sequences with MSA context)
   max_eval_samples: 5000  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
   eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
                                 # Lower values use less GPU memory but may be slightly slower.
@@ -50,12 +50,27 @@ training:
     threshold: 0.0  # Minimum change required to qualify as improvement (0.0 = any improvement)
     min_steps: 1000  # Minimum training steps before early stopping can trigger (informational - ensure eval_steps * patience >= min_steps)
 
-  # MSA sampling parameters
+  # MSA sampling parameters for TRAINING
+  # Using fewer samples (64) during training allows for more diverse sampling across epochs
+  # while keeping memory usage manageable with larger batch sizes
   msa_sampling:
     max_num_samples: 64  # Maximum number of sequences to sample from MSA for context
+    max_token_length: 8192 # Maximum length of context sequences to sample from MSA
     max_query_similarity: 0.95  # Maximum similarity of context sequences to query
     min_query_similarity: 0.0  # Minimum similarity of context sequences to query
     neighbor_similarity_lower_bound: 0.8  # Minimum similarity to be considered a neighbor for weighted sampling
+
+  # MSA sampling parameters for VALIDATION
+  # Note: During training, evaluation uses reduced MSA parameters to avoid OOM
+  # because flex_attention falls back to dense O(n²) attention within the Trainer.
+  # For accurate final metrics comparable to standalone evaluation, run
+  # evaluate_original_model_hf.py separately after training with full parameters.
+  validation_msa_sampling:
+    max_num_samples: 256  # Reduced from 511 to avoid OOM during training eval
+    max_token_length: 8192 # Reduced from 14784 to avoid OOM during training eval
+    max_query_similarity: 0.95
+    min_query_similarity: 0.0
+    neighbor_similarity_lower_bound: 0.8
 
 lora:
   r: 16

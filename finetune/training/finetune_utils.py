@@ -6,7 +6,9 @@ import torch
 import logging
 import re
 from datetime import datetime
-from typing import Dict, Optional
+import yaml
+from pathlib import Path
+from ml_collections import config_dict
 from transformers import set_seed, TrainerCallback
 from transformers.utils import logging as transformers_logging
 
@@ -56,6 +58,71 @@ class MetricRenameCallback(TrainerCallback):
             # Update logs in place
             logs.clear()
             logs.update(new_logs)
+
+
+class CompileFlexAttentionForEvalCallback(TrainerCallback):
+    """
+    Informational callback for evaluation.
+
+    Note: torch.compile for flex_attention doesn't work within the HuggingFace Trainer
+    because PyTorch's internal flex_attention dispatch still falls back to dense O(n²)
+    attention. This callback now just logs reminders about proper evaluation settings.
+
+    For accurate evaluation metrics, use evaluate_original_model_hf.py after training.
+    """
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self._logged_once = False
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        """Log reminder about evaluation settings."""
+        if not self._logged_once:
+            self.logger.info(
+                "Note: Training evaluation uses reduced MSA parameters to avoid OOM. "
+                "For final metrics comparable to standalone evaluation, run "
+                "evaluate_original_model_hf.py separately after training."
+            )
+            self._logged_once = True
+
+
+class MSADatasetEpochCallback(TrainerCallback):
+    """
+    Callback to update MSA dataset seeds at the start of each epoch.
+
+    This enables dynamic MSA sampling during training, where each epoch samples
+    different context sequences from MSAs, effectively augmenting the training data.
+    Works with both E1MSADataset and ConcatE1MSADataset.
+    """
+
+    def __init__(self, train_dataset):
+        """
+        Initialize the callback with the training dataset.
+
+        Args:
+            train_dataset: The training dataset (ConcatE1MSADataset or E1MSADataset)
+                          that supports set_epoch() method.
+        """
+        self.train_dataset = train_dataset
+        self.logger = logging.getLogger(__name__)
+        self._last_epoch = -1
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        """Called at the beginning of each training epoch."""
+        epoch = state.epoch if state.epoch is not None else 0
+        epoch_int = int(epoch)
+
+        # Avoid updating twice for the same epoch
+        if epoch_int == self._last_epoch:
+            return
+
+        self._last_epoch = epoch_int
+
+        if hasattr(self.train_dataset, "set_epoch"):
+            self.train_dataset.set_epoch(epoch_int)
+            self.logger.info(
+                f"Updated MSA dataset for epoch {epoch_int} (new MSA sampling)"
+            )
 
 
 def set_seeds(s: int):
@@ -194,3 +261,41 @@ def save_model(model, filepath: str):
             non_frozen_params[param_name] = param
     torch.save(non_frozen_params, filepath)
     logger.info(f"Model saved to {filepath}")
+
+
+def process_config(conf_path, config_name="train"):
+    """
+    Load YAML configuration and setup output path.
+
+    Parameters:
+    - conf_path: the path to the YAML configuration file.
+    - config_name: The base name of the configuration file, used for directory structuring.
+
+    Returns:
+    - A tuple of the configuration dictionary and the output path as a Path object (if created).
+    """
+    with open(conf_path, "r") as f:
+        # Load only the first YAML document (config), ignore subsequent documents (notes)
+        documents = list(yaml.safe_load_all(f))
+        conf = documents[0] if documents else {}
+
+    output_path = None
+
+    # Setup the output directory if not in debug mode
+    if not conf.get("general", {}).get("debug", False):
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
+        # Use output_dir from training config if available, otherwise use default structure
+        base_output_dir = conf.get("training", {}).get(
+            "output_dir", f"results/{config_name}"
+        )
+        output_path = Path(base_output_dir) / Path(timestamp)
+        output_path.mkdir(parents=True, exist_ok=True)
+        conf["output_path"] = "./" + str(output_path)
+        # Save config as YAML
+        with open(str(output_path) + "/config.yaml", "w") as f:
+            yaml.dump(conf, f, default_flow_style=False)
+
+    # Wrap the configuration dictionary in a custom dictionary class if used
+    conf = config_dict.ConfigDict(conf)
+
+    return conf, output_path
