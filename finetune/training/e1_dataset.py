@@ -3,12 +3,127 @@ import random
 import pandas as pd
 from pathlib import Path
 from typing import List, Optional
+import torch
 from torch.utils.data import Dataset
 import logging
 
 from E1.msa_sampling import sample_context
 
 logger = logging.getLogger(__name__)
+
+
+class ConcatE1MSADataset(Dataset):
+    """
+    A dynamic concatenation dataset that wraps multiple E1MSADatasets.
+
+    Unlike static concatenation (extracting all data upfront), this dataset
+    defers data extraction to __getitem__ time, enabling dynamic MSA sampling
+    per epoch when set_epoch() is called.
+
+    This is crucial for data augmentation with MSA context - each epoch can
+    sample different context sequences from the MSAs, effectively multiplying
+    the training data diversity.
+    """
+
+    def __init__(
+        self,
+        datasets: List["E1MSADataset"],
+        sources: Optional[List[str]] = None,
+        shuffle: bool = True,
+        seed: int = 42,
+    ):
+        """
+        Initialize the concatenation dataset.
+
+        Args:
+            datasets: List of E1MSADataset instances to concatenate
+            sources: Optional list of source labels (one per dataset)
+            shuffle: Whether to shuffle the index mapping
+            seed: Random seed for shuffling
+        """
+        self.datasets = datasets
+        self.sources = sources or [f"Dataset_{i}" for i in range(len(datasets))]
+        self.shuffle = shuffle
+        self.seed = seed
+
+        # Build cumulative lengths for indexing
+        self._cumulative_lengths = []
+        total = 0
+        for ds in datasets:
+            total += len(ds)
+            self._cumulative_lengths.append(total)
+
+        self._total_length = total
+
+        # Build index mapping: maps global idx -> (dataset_idx, local_idx)
+        self._build_index_mapping()
+
+        logger.info(
+            f"ConcatE1MSADataset initialized with {len(datasets)} datasets, "
+            f"total {self._total_length} samples, shuffle={shuffle}"
+        )
+
+    def _build_index_mapping(self):
+        """Build the mapping from global index to (dataset_idx, local_idx)."""
+        self._index_mapping = []
+        for ds_idx, ds in enumerate(self.datasets):
+            for local_idx in range(len(ds)):
+                self._index_mapping.append((ds_idx, local_idx, self.sources[ds_idx]))
+
+        if self.shuffle:
+            rng = random.Random(self.seed)
+            rng.shuffle(self._index_mapping)
+
+    def set_epoch(self, epoch: int):
+        """
+        Set epoch for dynamic MSA sampling.
+
+        This updates all underlying E1MSADatasets with the new epoch,
+        causing them to sample different MSA contexts.
+
+        Args:
+            epoch: Current training epoch
+        """
+        for ds in self.datasets:
+            if hasattr(ds, "set_epoch"):
+                ds.set_epoch(epoch)
+
+        # Re-shuffle with epoch-varied seed for different ordering each epoch
+        if self.shuffle:
+            self.seed = self.seed + epoch
+            self._build_index_mapping()
+
+        logger.debug(
+            f"ConcatE1MSADataset set_epoch({epoch}) - updated all underlying datasets"
+        )
+
+    def __len__(self) -> int:
+        return self._total_length
+
+    def __getitem__(self, idx: int) -> dict:
+        """
+        Get a sample dynamically from the underlying datasets.
+
+        This allows MSA sampling to happen at access time, enabling
+        different context samples per epoch.
+
+        Args:
+            idx: Global index
+
+        Returns:
+            Dictionary with 'text' (sequence string) and 'source' (dataset label)
+        """
+        if idx < 0 or idx >= self._total_length:
+            raise IndexError(
+                f"Index {idx} out of range for dataset of size {self._total_length}"
+            )
+
+        ds_idx, local_idx, source = self._index_mapping[idx]
+
+        # Access the underlying dataset dynamically (MSA sampling happens here)
+        text = self.datasets[ds_idx][local_idx]
+
+        return {"text": text, "source": source}
 
 
 def validate_msa_file(msa_path: Path) -> bool:
@@ -179,6 +294,8 @@ class E1MSADataset(Dataset):
                     return query_seq
 
                 # Sample context from MSA (excludes query, samples other sequences)
+                # NOTE: Explicitly use CPU device to avoid CUDA re-initialization errors
+                # in DataLoader worker processes. MSA sampling is CPU-bound anyway.
                 try:
                     context_str, context_ids = sample_context(
                         msa_path=str(msa_path),
@@ -188,6 +305,9 @@ class E1MSADataset(Dataset):
                         min_query_similarity=self.min_query_similarity,
                         neighbor_similarity_lower_bound=self.neighbor_similarity_lower_bound,
                         seed=self.seed + idx,  # Vary seed by index for diversity
+                        device=torch.device(
+                            "cpu"
+                        ),  # Use CPU to avoid CUDA multiprocessing issues
                     )
 
                     # Format: CONTEXT_SEQ1,CONTEXT_SEQ2,...,QUERY_SEQ
@@ -227,6 +347,7 @@ def create_e1_datasets_from_config(
     data_conf: dict,
     general_conf: dict,
     msa_sampling_conf: Optional[dict] = None,
+    validation_msa_sampling_conf: Optional[dict] = None,
 ) -> tuple[E1MSADataset, E1MSADataset, E1MSADataset, E1MSADataset]:
     """
     Create train and validation datasets for E1 fine-tuning.
@@ -234,7 +355,10 @@ def create_e1_datasets_from_config(
     Args:
         data_conf: Data configuration dictionary
         general_conf: General configuration dictionary (for seed)
-        msa_sampling_conf: MSA sampling configuration dictionary
+        msa_sampling_conf: MSA sampling configuration dictionary for training
+        validation_msa_sampling_conf: MSA sampling configuration for validation.
+            If None, uses evaluation-like defaults (max_num_samples=511, max_token_length=14784)
+            to ensure fair comparison with standalone evaluation metrics.
 
     Returns:
         Tuple of (homologs_train, homologs_val, swissprot_train, swissprot_val) datasets
@@ -249,14 +373,41 @@ def create_e1_datasets_from_config(
     seed = general_conf.get("seed", 1)
     msa_sampling_conf = msa_sampling_conf or {}
 
-    # Get MSA sampling parameters
+    # Get MSA sampling parameters for TRAINING
+    # max_token_length is now required in msa_sampling_conf (moved from data section)
+    max_token_length = msa_sampling_conf.get("max_token_length", 8192)
     max_num_samples = msa_sampling_conf.get("max_num_samples", 64)
     max_query_similarity = msa_sampling_conf.get("max_query_similarity", 0.95)
     min_query_similarity = msa_sampling_conf.get("min_query_similarity", 0.0)
     neighbor_similarity_lower_bound = msa_sampling_conf.get(
         "neighbor_similarity_lower_bound", 0.8
     )
-    max_token_length = data_conf.get("max_length", 16384)
+
+    # Get MSA sampling parameters for VALIDATION
+    # Note: During training, evaluation uses reduced MSA parameters to avoid OOM
+    # because flex_attention falls back to dense O(n²) attention within the Trainer.
+    # For accurate final metrics comparable to standalone evaluation, run
+    # evaluate_original_model_hf.py separately after training with full parameters.
+    validation_msa_sampling_conf = validation_msa_sampling_conf or {}
+    val_max_num_samples = validation_msa_sampling_conf.get("max_num_samples", 128)
+    val_max_token_length = validation_msa_sampling_conf.get("max_token_length", 4096)
+    val_max_query_similarity = validation_msa_sampling_conf.get(
+        "max_query_similarity", max_query_similarity
+    )
+    val_min_query_similarity = validation_msa_sampling_conf.get(
+        "min_query_similarity", min_query_similarity
+    )
+    val_neighbor_similarity_lower_bound = validation_msa_sampling_conf.get(
+        "neighbor_similarity_lower_bound", neighbor_similarity_lower_bound
+    )
+
+    logger.info("MSA Sampling Configuration:")
+    logger.info(
+        f"  Training: max_num_samples={max_num_samples}, max_token_length={max_token_length}"
+    )
+    logger.info(
+        f"  Validation: max_num_samples={val_max_num_samples}, max_token_length={val_max_token_length}"
+    )
 
     # Load homologs (MSA files)
     homologs_dir = data_conf.get("homologs_dir", None)
@@ -312,11 +463,11 @@ def create_e1_datasets_from_config(
         )
         homologs_val = E1MSADataset(
             msa_files=[str(f) for f in hom_val_files],
-            max_num_samples=max_num_samples,
-            max_token_length=max_token_length,
-            max_query_similarity=max_query_similarity,
-            min_query_similarity=min_query_similarity,
-            neighbor_similarity_lower_bound=neighbor_similarity_lower_bound,
+            max_num_samples=val_max_num_samples,  # Use validation-specific params (default 511)
+            max_token_length=val_max_token_length,  # Use validation-specific params (default 14784)
+            max_query_similarity=val_max_query_similarity,
+            min_query_similarity=val_min_query_similarity,
+            neighbor_similarity_lower_bound=val_neighbor_similarity_lower_bound,
             seed=seed,
             is_validation=True,  # Fixed seed for validation
         )
