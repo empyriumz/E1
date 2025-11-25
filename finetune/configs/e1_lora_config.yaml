@@ -33,9 +33,9 @@ training:
   
   # Evaluation and logging settings
   eval_strategy: "steps"  # Options: "no", "steps", "epoch"
-  eval_steps: 100  # Evaluate every N training steps
-  eval_batch_size: 4  # Evaluation batch size (smaller for longer sequences with MSA context)
-  max_eval_samples: 1500  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
+  eval_steps: 200  # Evaluate every N training steps
+  eval_batch_size: 8  # Evaluation batch size (smaller for longer sequences with MSA context)
+  max_eval_samples: 5000  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
   eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
                                 # Lower values use less GPU memory but may be slightly slower.
   logging_strategy: "steps"  # Options: "no", "steps", "epoch"
