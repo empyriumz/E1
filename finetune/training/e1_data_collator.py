@@ -16,12 +16,15 @@ class E1DataCollatorForMLM:
     - Applying BERT-style masking (15% of tokens, with 80/10/10 split)
     - Only masking the query sequence (last sequence), not context sequences
     - Excluding boundary tokens from masking
+    - Truncating sequences that exceed max_total_tokens to prevent OOM
     """
 
     def __init__(
         self,
         mlm_probability: float = 0.15,
         mask_token: str = "?",
+        max_total_tokens: int = 8192,
+        max_query_tokens: int = 1024,
     ):
         """
         Initialize E1DataCollatorForMLM.
@@ -29,12 +32,21 @@ class E1DataCollatorForMLM:
         Args:
             mlm_probability: Probability of masking each token (default 0.15)
             mask_token: Token to use for masking (default "?" for E1)
+            max_total_tokens: Maximum total tokens per sample including context + query.
+                              Samples exceeding this will have context sequences removed
+                              to fit within the limit. (default 16384)
+            max_query_tokens: Maximum tokens for query sequence (default 4096).
+                              This is critical because the query uses full O(n²) self-attention
+                              while context uses efficient block-causal attention.
+                              Query sequences exceeding this will be truncated.
         """
         self.batch_preparer = E1BatchPreparer()
         self.mlm_probability = mlm_probability
         self.mask_token = mask_token
         self.mask_token_id = self.batch_preparer.mask_token_id
         self.pad_token_id = self.batch_preparer.pad_token_id
+        self.max_total_tokens = max_total_tokens
+        self.max_query_tokens = max_query_tokens
 
         # Get vocabulary size for random token replacement
         self.vocab_size = len(self.batch_preparer.vocab)
@@ -44,6 +56,64 @@ class E1DataCollatorForMLM:
         logger.info(f"  - Mask token: {mask_token} (ID: {self.mask_token_id})")
         logger.info(f"  - Pad token ID: {self.pad_token_id}")
         logger.info(f"  - Vocab size: {self.vocab_size}")
+        logger.info(f"  - Max total tokens: {max_total_tokens}")
+        logger.info(f"  - Max query tokens: {max_query_tokens} (O(n²) self-attention)")
+
+    def _truncate_sequence(self, sequence: str) -> str:
+        """
+        Truncate a multi-sequence string to fit within token limits.
+
+        Two-stage truncation:
+        1. Truncate query sequence if it exceeds max_query_tokens (critical for O(n²) attention)
+        2. Remove context sequences from the beginning if total exceeds max_total_tokens
+
+        Args:
+            sequence: Comma-separated sequence string (context1,context2,...,query)
+
+        Returns:
+            Truncated sequence string
+        """
+        # Split into individual sequences
+        sequences = sequence.split(",")
+
+        # Each sequence gets 4 special tokens: <bos>, 1, ..., 2, <eos>
+        tokens_per_seq = 4
+
+        # Query is the last sequence - this uses O(n²) self-attention!
+        query = sequences[-1]
+
+        # Stage 1: Truncate query if it exceeds max_query_tokens
+        # This is critical because query uses full self-attention (O(query_len²))
+        # while context uses efficient block-causal attention
+        max_query_chars = (
+            self.max_query_tokens - tokens_per_seq
+        )  # Account for special tokens
+        if len(query) > max_query_chars:
+            query = query[:max_query_chars]
+            sequences[-1] = query
+
+        if len(sequences) <= 1:
+            # Single sequence (query only), return truncated query
+            return query
+
+        context_seqs = sequences[:-1]
+
+        # Stage 2: Calculate total tokens and remove context if needed
+        total_tokens = sum(len(seq) + tokens_per_seq for seq in sequences)
+
+        if total_tokens <= self.max_total_tokens:
+            return ",".join(context_seqs) + "," + query
+
+        # Remove context sequences from the beginning until we fit
+        while context_seqs and total_tokens > self.max_total_tokens:
+            removed = context_seqs.pop(0)
+            total_tokens -= len(removed) + tokens_per_seq
+
+        if context_seqs:
+            return ",".join(context_seqs) + "," + query
+        else:
+            # All context removed, return query only
+            return query
 
     def __call__(self, examples: List[str]) -> Dict[str, torch.Tensor]:
         """
@@ -55,11 +125,14 @@ class E1DataCollatorForMLM:
         Returns:
             Dictionary with batched tensors ready for E1 model forward pass
         """
+        # Truncate sequences that exceed max_total_tokens to prevent OOM
+        truncated_examples = [self._truncate_sequence(ex) for ex in examples]
+
         # First, prepare batches using E1BatchPreparer
         # This gives us input_ids, sequence_ids, position IDs, and initial labels
         # Use CPU device for data collation (Trainer will move to GPU later)
         batch_dict = self.batch_preparer.get_batch_kwargs(
-            examples, device=torch.device("cpu")
+            truncated_examples, device=torch.device("cpu")
         )
 
         # Extract tensors

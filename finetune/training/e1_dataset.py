@@ -374,13 +374,14 @@ def create_e1_datasets_from_config(
     msa_sampling_conf = msa_sampling_conf or {}
 
     # Get MSA sampling parameters for TRAINING
+    # max_token_length is now required in msa_sampling_conf (moved from data section)
+    max_token_length = msa_sampling_conf.get("max_token_length", 8192)
     max_num_samples = msa_sampling_conf.get("max_num_samples", 64)
     max_query_similarity = msa_sampling_conf.get("max_query_similarity", 0.95)
     min_query_similarity = msa_sampling_conf.get("min_query_similarity", 0.0)
     neighbor_similarity_lower_bound = msa_sampling_conf.get(
         "neighbor_similarity_lower_bound", 0.8
     )
-    max_token_length = data_conf.get("max_token_length", 8192)
 
     # Get MSA sampling parameters for VALIDATION
     # Note: During training, evaluation uses reduced MSA parameters to avoid OOM

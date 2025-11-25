@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ClearCacheCallback(TrainerCallback):
-    """Callback to clear GPU cache before evaluation to prevent OOM."""
+    """Callback to clear GPU cache before and after evaluation to prevent OOM."""
 
     def __init__(self):
         self.prediction_step_count = 0
@@ -35,6 +35,19 @@ class ClearCacheCallback(TrainerCallback):
         self.prediction_step_count += 1
         if torch.cuda.is_available() and self.prediction_step_count % 100 == 0:
             torch.cuda.empty_cache()
+
+    def on_save(self, args, state, control, **kwargs):
+        # Clear cache after checkpoint saving (which happens after evaluation)
+        # This ensures memory is freed before training resumes
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            self.logger.debug("GPU cache cleared after checkpoint save")
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        # Clear cache at the start of training
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            self.logger.debug("GPU cache cleared at training start")
 
 
 class MetricRenameCallback(TrainerCallback):

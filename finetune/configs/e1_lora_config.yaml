@@ -6,9 +6,6 @@ data:
   homologs_dir: "/host/MMseqs2/rare_earth_results/a3m_files"  # Directory containing .a3m MSA files
   swissprot_file: "/host/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
   val_split_ratio: 0.1
-  max_length: 16384  # Maximum sequence length in tokens. E1 uses block causal attention that scales better than L^2.
-                     # Evaluation script uses max_token_length=14784 for MSA sampling.
-                     # Can be increased further (e.g., 32768) depending on GPU memory.
 
 training:
   checkpoint: "Synthyra/Profluent-E1-600M"  # Options: "Synthyra/Profluent-E1-600M" or "Profluent-Bio/E1-600m"
@@ -55,7 +52,12 @@ training:
   # while keeping memory usage manageable with larger batch sizes
   msa_sampling:
     max_num_samples: 64  # Maximum number of sequences to sample from MSA for context
-    max_token_length: 8192 # Maximum length of context sequences to sample from MSA
+    max_token_length: 8192  # Maximum total sequence length in tokens (context + query) for training.
+                            # E1 uses block-causal attention for context (efficient, <O(n²)).
+    max_query_length: 1024  # Maximum query sequence length in tokens for training. CRITICAL for memory!
+                            # Query uses full O(n²) self-attention, so this dominates memory usage.
+                            # Reduce this if you encounter OOM errors during backward pass.
+                            # Context sequences use efficient block-causal attention.
     max_query_similarity: 0.95  # Maximum similarity of context sequences to query
     min_query_similarity: 0.0  # Minimum similarity of context sequences to query
     neighbor_similarity_lower_bound: 0.8  # Minimum similarity to be considered a neighbor for weighted sampling
@@ -67,7 +69,10 @@ training:
   # evaluate_original_model_hf.py separately after training with full parameters.
   validation_msa_sampling:
     max_num_samples: 256  # Reduced from 511 to avoid OOM during training eval
-    max_token_length: 8192 # Reduced from 14784 to avoid OOM during training eval
+    max_token_length: 12288 # Maximum total sequence length in tokens (context + query) for validation.
+                            # Reduced from 14784 to avoid OOM during training eval
+    max_query_length: 2048  # Maximum query sequence length in tokens for validation.
+                            # Can be set differently from training if needed.
     max_query_similarity: 0.95
     min_query_similarity: 0.0
     neighbor_similarity_lower_bound: 0.8

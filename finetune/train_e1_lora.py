@@ -337,8 +337,12 @@ def create_compute_metrics(
         )
         # With MSA context, query is typically 5-15% of total tokens
         # (depends on max_num_samples and max_token_length config)
-        expected_ratio_low = mlm_probability * 0.05  # ~0.75% if query is ~5% of total (many context seqs)
-        expected_ratio_high = mlm_probability * 0.30  # ~4.5% if query is ~30% of total (few context seqs)
+        expected_ratio_low = (
+            mlm_probability * 0.05
+        )  # ~0.75% if query is ~5% of total (many context seqs)
+        expected_ratio_high = (
+            mlm_probability * 0.30
+        )  # ~4.5% if query is ~30% of total (few context seqs)
 
         logger.info(
             f"Masked positions: {num_masked_positions}/{total_positions} ({100*masked_ratio:.2f}%). "
@@ -749,7 +753,26 @@ def train(config, output_path=None):
 
     # Create data collator
     mlm_probability = train_conf.get("mlm_probability", 0.15)
-    data_collator = E1DataCollatorForMLM(mlm_probability=mlm_probability)
+    # Get max_token_length and max_query_length from training and validation MSA sampling configs
+    # Use the maximum to ensure validation sequences aren't truncated unnecessarily
+    msa_sampling_conf = train_conf.get("msa_sampling", {})
+    validation_msa_sampling_conf = train_conf.get("validation_msa_sampling", {})
+    train_max_token_length = msa_sampling_conf.get("max_token_length", 8192)
+    train_max_query_length = msa_sampling_conf.get("max_query_length", 1024)
+    val_max_token_length = validation_msa_sampling_conf.get(
+        "max_token_length", train_max_token_length
+    )
+    val_max_query_length = validation_msa_sampling_conf.get(
+        "max_query_length", train_max_query_length
+    )
+    # Use maximum of training and validation limits for data collator
+    max_token_length = max(train_max_token_length, val_max_token_length)
+    max_query_length = max(train_max_query_length, val_max_query_length)
+    data_collator = E1DataCollatorForMLM(
+        mlm_probability=mlm_probability,
+        max_total_tokens=max_token_length,  # Cap total tokens to prevent OOM on long MSAs
+        max_query_tokens=max_query_length,  # Cap query length (O(n²) self-attention)
+    )
 
     # Mixed Precision Settings
     fp16 = False
@@ -936,7 +959,20 @@ def train(config, output_path=None):
     logger.info(f"Optimizer: {optimizer}")
     logger.info(f"LR scheduler: {lr_scheduler_type} (warmup steps: {warmup_steps})")
     logger.info(f"Mixed precision: {train_conf['mixed_precision']}")
-    logger.info(f"Max sequence length: {data_conf.get('max_length', 'N/A')}")
+    msa_sampling_conf = train_conf.get("msa_sampling", {})
+    logger.info(
+        f"Max token length (training): {msa_sampling_conf.get('max_token_length', 'N/A')}"
+    )
+    logger.info(
+        f"Max query length (training): {msa_sampling_conf.get('max_query_length', 'N/A')}"
+    )
+    validation_msa_sampling_conf = train_conf.get("validation_msa_sampling", {})
+    logger.info(
+        f"Max token length (validation): {validation_msa_sampling_conf.get('max_token_length', 'N/A')}"
+    )
+    logger.info(
+        f"Max query length (validation): {validation_msa_sampling_conf.get('max_query_length', 'N/A')}"
+    )
     logger.info(
         f"Gradient checkpointing: {train_conf.get('gradient_checkpointing', False)}"
     )
