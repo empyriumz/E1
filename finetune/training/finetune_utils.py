@@ -14,6 +14,82 @@ from transformers.utils import logging as transformers_logging
 # Module-level logger (will be configured in train function)
 logger = logging.getLogger(__name__)
 
+# Align HF caching for offline runs
+DEFAULT_HF_HOME = "/hpcgpfs01/scratch/xdai/huggingface"
+HF_HOME = os.environ.setdefault("HF_HOME", DEFAULT_HF_HOME)
+HF_CACHE_DIR = os.environ.setdefault("HF_CACHE_DIR", os.path.join(HF_HOME, "hub"))
+
+if not os.path.isdir(HF_CACHE_DIR):
+    logger.warning(
+        "HF_CACHE_DIR '%s' does not exist. Please ensure offline weights are synced.",
+        HF_CACHE_DIR,
+    )
+
+
+def _resolve_hf_cache_dir() -> Optional[str]:
+    """
+    Determine the HuggingFace cache directory to use when running in offline mode.
+
+    Preference order:
+        1. HF_CACHE_DIR (if set and exists)
+        2. HF_HOME/hub (if HF_HOME is set and the hub subfolder exists)
+        3. HF_HOME (if set and exists)
+    """
+    env_cache_dir = os.environ.get("HF_CACHE_DIR")
+    if env_cache_dir:
+        env_cache_dir = os.path.expanduser(env_cache_dir)
+        if os.path.isdir(env_cache_dir):
+            return env_cache_dir
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        hf_home = os.path.expanduser(hf_home)
+        hf_home_hub = os.path.join(hf_home, "hub")
+        if os.path.isdir(hf_home_hub):
+            return hf_home_hub
+        if os.path.isdir(hf_home):
+            return hf_home
+
+    return None
+
+
+def _locate_offline_checkpoint(model_id: str) -> Optional[str]:
+    """
+    Locate a locally cached checkpoint following the HF_HOME/HF_CACHE_DIR layout.
+
+    Args:
+        model_id: HuggingFace model identifier (e.g., "Synthyra/Profluent-E1-600M")
+
+    Returns:
+        Path to cached checkpoint directory, or None if not found
+    """
+    direct_path = os.path.join(HF_CACHE_DIR, model_id)
+    if os.path.isdir(direct_path):
+        return direct_path
+
+    repo_dir = os.path.join(HF_CACHE_DIR, f"models--{model_id.replace('/', '--')}")
+    snapshots_dir = os.path.join(repo_dir, "snapshots")
+    refs_main = os.path.join(repo_dir, "refs", "main")
+
+    if os.path.isfile(refs_main):
+        with open(refs_main, "r", encoding="utf-8") as ref_file:
+            ref = ref_file.read().strip()
+        resolved = os.path.join(snapshots_dir, ref)
+        if os.path.isdir(resolved):
+            return resolved
+
+    if os.path.isdir(snapshots_dir):
+        snapshot_dirs = [
+            os.path.join(snapshots_dir, d)
+            for d in os.listdir(snapshots_dir)
+            if os.path.isdir(os.path.join(snapshots_dir, d))
+        ]
+        if snapshot_dirs:
+            snapshot_dirs.sort(key=os.path.getmtime, reverse=True)
+            return snapshot_dirs[0]
+
+    return None
+
 
 class ClearCacheCallback(TrainerCallback):
     """Callback to clear GPU cache before evaluation to prevent OOM."""

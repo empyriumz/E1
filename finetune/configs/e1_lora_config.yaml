@@ -1,10 +1,10 @@
 general:
   seed: 1
-  gpu_id: "0"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
+  gpu_id: "all"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
 
 data:
-  homologs_dir: "/host/MMseqs2/rare_earth_results/a3m_files"  # Directory containing .a3m MSA files
-  swissprot_file: "/host/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
+  homologs_dir: "/hpcgpfs01/scratch/xdai/rare_earth_a3m_files"  # Directory containing .a3m MSA files
+  swissprot_file: "/sdcc/u/xdai/ESMBind_private/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
   val_split_ratio: 0.1
   max_length: 16384  # Maximum sequence length in tokens. E1 uses block causal attention that scales better than L^2.
                      # Evaluation script uses max_token_length=14784 for MSA sampling.
@@ -17,8 +17,8 @@ training:
                                 # Set to null to start fresh training
   save_best_checkpoint: true    # Whether to save the best checkpoint folder for resuming training later
   epochs: 10
-  batch_size: 4  # Start smaller due to longer sequences with MSA context
-  accum_steps: 4  # Increase gradient accumulation to maintain effective batch size
+  batch_size: 16  # Start smaller due to longer sequences with MSA context
+  accum_steps: 2  # Increase gradient accumulation to maintain effective batch size
   learning_rate: 0.0002
   weight_decay: 0.01  # L2 regularization weight decay. Range: 0.0 (no regularization) to 0.1 (strong regularization)
   optimizer: "adamw_torch_fused"  # Options: "adamw_hf", "adamw_torch", "adamw_torch_fused" (fastest), "adamw_apex_fused", "sgd", "adafactor"

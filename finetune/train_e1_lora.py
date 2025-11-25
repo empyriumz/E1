@@ -1,4 +1,14 @@
 import os
+import sys
+
+# Add src directory to Python path so E1 module can be imported without installing the package
+# This script is in finetune/, so we need to go up one level to reach src/
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+src_path = os.path.join(project_root, "src")
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
 import argparse
 import logging
 import torch
