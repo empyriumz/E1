@@ -4,7 +4,7 @@ general:
 
 data:
   homologs_dir: "/hpcgpfs01/scratch/xdai/rare_earth_a3m_files"  # Directory containing .a3m MSA files
-  swissprot_file: "/sdcc/u/xdai/ESMBind_private/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
+  swissprot_file: "/sdcc/u/xdai/ESMBind_private/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
   val_split_ratio: 0.1
   max_length: 16384  # Maximum sequence length in tokens. E1 uses block causal attention that scales better than L^2.
                      # Evaluation script uses max_token_length=14784 for MSA sampling.
@@ -36,7 +36,7 @@ training:
   eval_steps: 200  # Evaluate every N training steps
   eval_batch_size: 8  # Evaluation batch size (smaller for longer sequences with MSA context)
   max_eval_samples: 5000  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
-  eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
+  eval_accumulation_steps: 30  # Move predictions to CPU every N steps during evaluation to prevent OOM.
                                 # Lower values use less GPU memory but may be slightly slower.
   logging_strategy: "steps"  # Options: "no", "steps", "epoch"
   logging_steps: 20  # Log metrics every N training steps
