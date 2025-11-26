@@ -247,9 +247,11 @@ def evaluate_sequence_batch(
             query_mask = sequence_ids == last_seq_id
 
             # Get boundary token mask to exclude special tokens
-            boundary_mask = batch_preparer.get_boundary_token_mask(
-                masked_batch["input_ids"]
-            )[0]
+            # Move boundary_token_ids to the same device as input_ids to avoid device mismatch
+            boundary_token_ids = batch_preparer.boundary_token_ids.to(
+                masked_batch["input_ids"].device
+            )
+            boundary_mask = torch.isin(masked_batch["input_ids"][0], boundary_token_ids)
             valid_query_mask = query_mask & (~boundary_mask)
 
             # Create labels tensor (same shape as masked_input_ids)
