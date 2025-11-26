@@ -1008,8 +1008,13 @@ def train(config, output_path=None):
     logger.info("Starting training...")
 
     # Helper function to find the latest checkpoint
-    def find_latest_checkpoint(output_dir):
+    def find_latest_checkpoint(output_dir, original_resume_checkpoint=None):
         """Find the most recent checkpoint directory.
+
+        Args:
+            output_dir: Primary output directory to search
+            original_resume_checkpoint: Optional path to original resume checkpoint
+                                        (used when training was resumed from another directory)
 
         Note: scaler.pt is only required when using fp16. bf16 doesn't use a gradient scaler.
         """
@@ -1020,6 +1025,16 @@ def train(config, output_path=None):
         best_checkpoint_dir = os.path.join(output_dir, "best_checkpoint")
         if os.path.exists(best_checkpoint_dir):
             checkpoint_dirs.append(best_checkpoint_dir)
+
+        # If no checkpoints in output_dir, fall back to original resume checkpoint
+        # This handles the case where OOM occurs before any new checkpoint is saved
+        if not checkpoint_dirs and original_resume_checkpoint:
+            if os.path.exists(original_resume_checkpoint):
+                checkpoint_dirs.append(original_resume_checkpoint)
+                logger.info(
+                    f"No checkpoints in output_dir, using original resume checkpoint: "
+                    f"{original_resume_checkpoint}"
+                )
 
         if not checkpoint_dirs:
             return None
@@ -1090,8 +1105,10 @@ def train(config, output_path=None):
                         f"GPU {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved"
                     )
 
-            # Find the latest checkpoint
-            latest_checkpoint = find_latest_checkpoint(output_dir)
+            # Find the latest checkpoint (include original resume checkpoint as fallback)
+            latest_checkpoint = find_latest_checkpoint(
+                output_dir, original_resume_checkpoint=resume_from_checkpoint
+            )
 
             if latest_checkpoint:
                 logger.info(f"Found latest checkpoint: {latest_checkpoint}")
@@ -1128,7 +1145,9 @@ def train(config, output_path=None):
 
     # If we exit the loop without breaking (shouldn't happen, but handle it)
     if oom_retry_count > max_oom_retries:
-        latest_checkpoint = find_latest_checkpoint(output_dir)
+        latest_checkpoint = find_latest_checkpoint(
+            output_dir, original_resume_checkpoint=resume_from_checkpoint
+        )
         raise RuntimeError(
             f"Training failed after {max_oom_retries} OOM retries. "
             f"Last checkpoint: {latest_checkpoint if latest_checkpoint else 'None'}. "

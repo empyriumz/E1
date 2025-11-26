@@ -14,6 +14,12 @@ from transformers import set_seed, TrainerCallback
 from transformers.utils import logging as transformers_logging
 
 
+# Set CUDA memory allocation config for better fragmentation handling
+# This should be set before CUDA is initialized
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+
 # Module-level logger (will be configured in train function)
 logger = logging.getLogger(__name__)
 
