@@ -1,5 +1,5 @@
 general:
-  seed: 1
+  seed: 0
   gpu_id: "all"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
 
 data:
@@ -10,9 +10,11 @@ data:
 training:
   checkpoint: "Synthyra/Profluent-E1-600M"  # Options: "Synthyra/Profluent-E1-600M" or "Profluent-Bio/E1-600m"
   output_dir: "results/e1_lora_checkpoints"
-  resume_from_checkpoint: null  # Path to checkpoint folder to resume training from
+  resume_from_checkpoint: results/e1_lora_checkpoints/2025-11-26-15-53/checkpoint-3300  # Path to checkpoint folder to resume training from
                                 # Set to null to start fresh training
   save_best_checkpoint: true    # Whether to save the best checkpoint folder for resuming training later
+  max_oom_retries: 3  # Maximum number of times to retry training after OOM error by resuming from latest checkpoint
+                      # Set to 0 to disable automatic retry (training will fail immediately on OOM)
   epochs: 20
   batch_size: 4  # Start smaller due to longer sequences with MSA context
   accum_steps: 2  # Increase gradient accumulation to maintain effective batch size
@@ -68,7 +70,7 @@ training:
   # For accurate final metrics comparable to standalone evaluation, run
   # evaluate_original_model_hf.py separately after training with full parameters.
   validation_msa_sampling:
-    max_num_samples: 256  # Reduced from 511 to avoid OOM during training eval
+    max_num_samples: 384  # Reduced from 511 to avoid OOM during training eval
     max_token_length: 12288 # Maximum total sequence length in tokens (context + query) for validation.
                             # Reduced from 14784 to avoid OOM during training eval
     max_query_length: 2048  # Maximum query sequence length in tokens for validation.
