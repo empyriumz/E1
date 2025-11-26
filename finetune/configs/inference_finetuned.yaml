@@ -1,0 +1,17 @@
+general:
+  seed: 1
+  gpu_id: 0
+
+data:
+  input_file: /host/protein-metal-ion-binding/multi_modal_binding/data_processing/biolip2_latest/CA/CA_total_30_identity.fasta
+  msa_dir: "/host/MMseqs2/CA_results/a3m_files"  # Optional, for MSA context
+
+training:
+  checkpoint: "Synthyra/Profluent-E1-600M"  # Base HuggingFace model identifier
+  adapter_checkpoint: "results/e1_lora_checkpoints/2025-11-26-12-38/checkpoint-2700"  # Path to LoRA adapter directory
+  mlm_probability: 0.15
+  max_eval_samples: null  # Optional: limit number of sequences if memory is an issue
+  model_dtype: bfloat16  # or "float16", "bfloat16"
+  compile_flex_attention: true  # Compile flex_attention for inference (default: false, only for inference)
+  output_dir: "results/finetuned_CA_evaluation"
+

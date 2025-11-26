@@ -1,15 +1,47 @@
 import random
 import argparse
+import os
+import json
 import torch
 import numpy as np
 from Bio import SeqIO
 from tqdm import tqdm
 from pathlib import Path
+from typing import Optional, Dict
 
 # E1 imports
 from E1.batch_preparer import E1BatchPreparer
 from E1.modeling import E1ForMaskedLM
 from E1.msa_sampling import sample_context
+
+# Try to import PEFT for finetuned model support
+try:
+    from peft import PeftModel, LoraConfig, get_peft_model
+
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+    print(
+        "Warning: PEFT library not available. Finetuned model support will be disabled."
+    )
+
+# Try to import checkpoint resolution utilities (optional)
+try:
+    import sys
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    finetune_path = os.path.join(script_dir, "finetune")
+    if os.path.isdir(finetune_path) and finetune_path not in sys.path:
+        sys.path.insert(0, finetune_path)
+    from finetune.training.finetune_utils import (
+        _locate_offline_checkpoint,
+        _resolve_hf_cache_dir,
+        HF_CACHE_DIR,
+    )
+
+    CHECKPOINT_UTILS_AVAILABLE = True
+except ImportError:
+    CHECKPOINT_UTILS_AVAILABLE = False
 
 
 # --- Helper Functions ---
@@ -281,6 +313,223 @@ def extract_e1_embeddings(
     return n_processed, len(failed_ids), failed_ids
 
 
+def load_finetuned_model(
+    base_model_name: str,
+    adapter_checkpoint: str,
+    lora_config: Optional[Dict] = None,
+    device: torch.device = None,
+    model_dtype: Optional[str] = None,
+):
+    """
+    Load finetuned E1 model with LoRA adapter.
+    Adapted from finetune/evaluate_finetuned_model_hf.py
+
+    Args:
+        base_model_name: HuggingFace model identifier (e.g., "Profluent-Bio/E1-600m")
+        adapter_checkpoint: Path to directory containing adapter weights
+                           (e.g., "results/e1_lora_checkpoints/2025-11-25-21-19/best_checkpoint")
+        lora_config: LoRA configuration dictionary. If None, will try to load from
+                    adapter_checkpoint/adapter_config.json
+        device: Device to load model on (if None, will use CUDA if available)
+        model_dtype: Model dtype ("float16", "bfloat16", or None for float32)
+
+    Returns:
+        Tuple of (model, batch_preparer)
+    """
+    if not PEFT_AVAILABLE:
+        raise ImportError(
+            "PEFT library is required for finetuned model support. "
+            "Install it with: pip install peft"
+        )
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print(f"Loading base E1 model from HuggingFace: {base_model_name}...")
+    print(f"Loading LoRA adapter from: {adapter_checkpoint}...")
+
+    # Determine dtype
+    dtype = None
+    if model_dtype == "float16":
+        dtype = torch.float16
+    elif model_dtype == "bfloat16":
+        dtype = torch.bfloat16
+
+    # Resolve base model checkpoint path
+    checkpoint_path = os.path.expanduser(base_model_name)
+    checkpoint_is_local = os.path.isdir(checkpoint_path)
+
+    if checkpoint_is_local:
+        resolved_checkpoint = checkpoint_path
+        cache_dir = None
+    elif CHECKPOINT_UTILS_AVAILABLE:
+        resolved_checkpoint = _locate_offline_checkpoint(base_model_name)
+        cache_dir = (
+            HF_CACHE_DIR if os.path.isdir(HF_CACHE_DIR) else _resolve_hf_cache_dir()
+        )
+
+        if resolved_checkpoint is None:
+            resolved_checkpoint = base_model_name
+            print(
+                f"Warning: Offline cache miss for '{base_model_name}'. "
+                "Attempting to load directly from HuggingFace ID."
+            )
+        else:
+            print(
+                f"Resolved offline checkpoint for '{base_model_name}' at '{resolved_checkpoint}'"
+            )
+    else:
+        resolved_checkpoint = base_model_name
+        cache_dir = None
+
+    if cache_dir:
+        print(f"Using HuggingFace cache directory: {cache_dir}")
+
+    # Load base model with trust_remote_code=True for custom model classes
+    load_kwargs = {
+        "trust_remote_code": True,
+    }
+    if cache_dir:
+        load_kwargs["cache_dir"] = cache_dir
+    if dtype is not None:
+        load_kwargs["dtype"] = dtype
+
+    try:
+        base_model = E1ForMaskedLM.from_pretrained(resolved_checkpoint, **load_kwargs)
+    except Exception as e:
+        print(f"Error: Failed to load base model: {e}")
+        raise
+
+    # Log base model parameters
+    total_params = sum(p.numel() for p in base_model.parameters())
+    print(f"Base Model - Total Parameters: {total_params/1e6:.1f}M")
+
+    # Expand adapter checkpoint path
+    adapter_path = os.path.expanduser(adapter_checkpoint)
+    if not os.path.isdir(adapter_path):
+        raise ValueError(
+            f"Adapter checkpoint must be a directory: {adapter_path}. "
+            f"Expected to contain 'adapter_model.safetensors' or 'adapter_model.bin'"
+        )
+
+    # Check if adapter files exist
+    adapter_model_file = os.path.join(adapter_path, "adapter_model.safetensors")
+    adapter_config_file = os.path.join(adapter_path, "adapter_config.json")
+    if not os.path.exists(adapter_model_file) and not os.path.exists(
+        os.path.join(adapter_path, "adapter_model.bin")
+    ):
+        raise ValueError(
+            f"Adapter model file not found in {adapter_path}. "
+            f"Expected 'adapter_model.safetensors' or 'adapter_model.bin'"
+        )
+
+    # Load LoRA configuration
+    if lora_config is None:
+        # Try to load from adapter_config.json
+        if os.path.exists(adapter_config_file):
+            print(f"Loading LoRA config from {adapter_config_file}")
+            with open(adapter_config_file, "r") as f:
+                adapter_config_data = json.load(f)
+            # Extract LoRA config from adapter config
+            lora_config = {
+                "r": adapter_config_data.get("r", 16),
+                "alpha": adapter_config_data.get("lora_alpha", 32),
+                "bias": adapter_config_data.get("bias", "none"),
+                "lora_dropout": adapter_config_data.get("lora_dropout", 0.05),
+                "target_modules": adapter_config_data.get("target_modules", None),
+            }
+            print("Loaded LoRA config from adapter checkpoint")
+        else:
+            # Use default LoRA config if not provided and not found
+            print(
+                f"Warning: LoRA config not found at {adapter_config_file}. Using default config."
+            )
+            lora_config = {}
+
+    # Default target_modules for E1 (can be overridden in config)
+    default_target_modules = lora_config.get("target_modules", None)
+    if default_target_modules is None:
+        # E1 default: attention + MLP layers
+        default_target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "w1",
+            "w2",
+            "w3",
+        ]
+
+    # Load adapter using PeftModel.from_pretrained
+    # This will automatically load the adapter config and weights from the checkpoint
+    print(f"Loading LoRA adapter from {adapter_path}...")
+
+    # Try to load adapter directly (preferred method)
+    # PeftModel.from_pretrained loads both the adapter config and weights
+    try:
+        model = PeftModel.from_pretrained(base_model, adapter_path)
+
+        # Log LoRA configuration from loaded adapter
+        if hasattr(model, "peft_config") and model.peft_config:
+            peft_config = list(model.peft_config.values())[0]
+            print("LoRA Configuration (loaded from adapter):")
+            print(f"  - rank (r): {peft_config.r}")
+            print(f"  - alpha: {peft_config.lora_alpha}")
+            print(f"  - dropout: {peft_config.lora_dropout}")
+            print(f"  - target_modules: {peft_config.target_modules}")
+            print(f"  - bias: {peft_config.bias}")
+    except Exception as e:
+        # If loading fails (e.g., missing adapter_config.json), try alternative approach
+        print(f"Warning: Direct adapter loading failed: {e}")
+        print("Attempting alternative loading method with provided config...")
+
+        # Create LoRA config for PEFT
+        peft_config = LoraConfig(
+            r=lora_config.get("r", 16),
+            lora_alpha=lora_config.get("alpha", 32),
+            bias=lora_config.get("bias", "none"),
+            target_modules=default_target_modules,
+            lora_dropout=lora_config.get("lora_dropout", 0.05),
+        )
+
+        # Log LoRA configuration
+        print("LoRA Configuration (from provided config):")
+        print(f"  - rank (r): {peft_config.r}")
+        print(f"  - alpha: {peft_config.lora_alpha}")
+        print(f"  - dropout: {peft_config.lora_dropout}")
+        print(f"  - target_modules: {peft_config.target_modules}")
+        print(f"  - bias: {peft_config.bias}")
+
+        # Apply LoRA to base model
+        model = get_peft_model(base_model, peft_config)
+
+        # Load trained adapter weights
+        print(f"Loading adapter weights from {adapter_path}...")
+        try:
+            model.load_adapter(adapter_path)
+        except Exception as e2:
+            print(f"Error: Failed to load adapter weights: {e2}")
+            raise
+
+    # Move model to device
+    model = model.to(device)
+
+    # Log trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Finetuned Model - Trainable Parameters: {trainable_params/1e6:.1f}M")
+    print(
+        f"Finetuned Model - Trainable Percentage: {100*trainable_params/total_params:.2f}%"
+    )
+
+    # Create batch preparer
+    batch_preparer = E1BatchPreparer()
+
+    # Set model to evaluation mode
+    model.eval()
+
+    return model, batch_preparer
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Extract E1 embeddings from sequence file"
@@ -324,26 +573,78 @@ def main():
         default=(0.05, 0.15),
         help="Range for masking probability (min, max). Use two identical values for a fixed probability (e.g., 0.1 0.1).",
     )
+    parser.add_argument(
+        "--adapter_checkpoint",
+        type=str,
+        default=None,
+        help="Path to LoRA adapter checkpoint directory (e.g., 'results/e1_lora_checkpoints/2025-11-25-21-19/best_checkpoint'). "
+        "If provided, will load a finetuned model with LoRA adapter.",
+    )
+    parser.add_argument(
+        "--model_dtype",
+        type=str,
+        default="bfloat16",
+        choices=["float16", "bfloat16"],
+        help="Model dtype for loading (float16 or bfloat16). If not specified, uses default dtype.",
+    )
     args = parser.parse_args()
 
-    # Load the model
-    print(f"Loading E1 model: {args.model}")
-    try:
-        if args.device == "auto":
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif args.device == "cpu":
-            device = torch.device("cpu")
-        elif args.device.startswith("cuda:"):
-            device = torch.device(args.device)
-        else:
-            raise ValueError(f"Invalid device specification: {args.device}")
+    # Validate device
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif args.device == "cpu":
+        device = torch.device("cpu")
+    elif args.device.startswith("cuda:"):
+        device = torch.device(args.device)
+    else:
+        raise ValueError(f"Invalid device specification: {args.device}")
 
-        model = E1ForMaskedLM.from_pretrained(args.model).to(device).eval()
-        print(f"Model loaded successfully on {device}")
-        batch_preparer = E1BatchPreparer()
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return
+    # Load the model (either regular or finetuned)
+    if args.adapter_checkpoint:
+        # Load finetuned model with LoRA adapter
+        if not PEFT_AVAILABLE:
+            print(
+                "Error: PEFT library is required for finetuned model support. "
+                "Install it with: pip install peft"
+            )
+            return
+
+        print(f"Loading finetuned E1 model with LoRA adapter")
+        print(f"  Base model: {args.model}")
+        print(f"  Adapter checkpoint: {args.adapter_checkpoint}")
+        try:
+            model, batch_preparer = load_finetuned_model(
+                base_model_name=args.model,
+                adapter_checkpoint=args.adapter_checkpoint,
+                lora_config=None,  # Will be loaded from adapter_config.json if available
+                device=device,
+                model_dtype=args.model_dtype,
+            )
+            print(f"Finetuned model loaded successfully on {device}")
+        except Exception as e:
+            print(f"Error loading finetuned model: {e}")
+            return
+    else:
+        # Load regular model
+        print(f"Loading E1 model: {args.model}")
+        try:
+            load_kwargs = {"trust_remote_code": True}
+            if args.model_dtype:
+                if args.model_dtype == "float16":
+                    load_kwargs["dtype"] = torch.float16
+                elif args.model_dtype == "bfloat16":
+                    load_kwargs["dtype"] = torch.bfloat16
+
+            model = (
+                E1ForMaskedLM.from_pretrained(args.model, **load_kwargs)
+                .to(device)
+                .eval()
+            )
+            print(f"Model loaded successfully on {device}")
+            batch_preparer = E1BatchPreparer()
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return
 
     # Load sequences
     print(f"Loading sequences from: {args.input}")
