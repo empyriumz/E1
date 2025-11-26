@@ -35,7 +35,7 @@ from training.finetune_utils import (
     MetricRenameCallback,
     process_config,
     MSADatasetEpochCallback,
-    CompileFlexAttentionForEvalCallback,
+    CompileFlexAttentionCallback,
 )
 
 # Module-level logger (will be configured in train function)
@@ -888,7 +888,7 @@ def train(config, output_path=None):
         ClearCacheCallback(),
         MetricRenameCallback(),
         MSADatasetEpochCallback(train_set),  # Enable dynamic MSA sampling per epoch
-        CompileFlexAttentionForEvalCallback(),  # Log reminder about evaluation settings
+        CompileFlexAttentionCallback(),  # Compile flex_attention for improved training speed
     ]
 
     # Add early stopping callback if enabled

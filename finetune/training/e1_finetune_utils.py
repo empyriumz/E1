@@ -6,7 +6,11 @@ from typing import Dict, Optional, Tuple
 
 from peft import LoraConfig, get_peft_model
 from modeling_e1 import E1ForMaskedLM, E1BatchPreparer
-from training.finetune_utils import _locate_offline_checkpoint, _resolve_hf_cache_dir, HF_CACHE_DIR
+from training.finetune_utils import (
+    _locate_offline_checkpoint,
+    _resolve_hf_cache_dir,
+    HF_CACHE_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,9 @@ def load_e1_model(
         cache_dir = None
     else:
         resolved_checkpoint = _locate_offline_checkpoint(checkpoint)
-        cache_dir = HF_CACHE_DIR if os.path.isdir(HF_CACHE_DIR) else _resolve_hf_cache_dir()
+        cache_dir = (
+            HF_CACHE_DIR if os.path.isdir(HF_CACHE_DIR) else _resolve_hf_cache_dir()
+        )
 
         if resolved_checkpoint is None:
             resolved_checkpoint = checkpoint
