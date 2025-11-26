@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import logging
 import re
+from typing import Optional
 from datetime import datetime
 import yaml
 from pathlib import Path
@@ -15,6 +16,82 @@ from transformers.utils import logging as transformers_logging
 
 # Module-level logger (will be configured in train function)
 logger = logging.getLogger(__name__)
+
+# Align HF caching for offline runs
+DEFAULT_HF_HOME = "/hpcgpfs01/scratch/xdai/huggingface"
+HF_HOME = os.environ.setdefault("HF_HOME", DEFAULT_HF_HOME)
+HF_CACHE_DIR = os.environ.setdefault("HF_CACHE_DIR", os.path.join(HF_HOME, "hub"))
+
+if not os.path.isdir(HF_CACHE_DIR):
+    logger.warning(
+        "HF_CACHE_DIR '%s' does not exist. Please ensure offline weights are synced.",
+        HF_CACHE_DIR,
+    )
+
+
+def _resolve_hf_cache_dir() -> Optional[str]:
+    """
+    Determine the HuggingFace cache directory to use when running in offline mode.
+
+    Preference order:
+        1. HF_CACHE_DIR (if set and exists)
+        2. HF_HOME/hub (if HF_HOME is set and the hub subfolder exists)
+        3. HF_HOME (if set and exists)
+    """
+    env_cache_dir = os.environ.get("HF_CACHE_DIR")
+    if env_cache_dir:
+        env_cache_dir = os.path.expanduser(env_cache_dir)
+        if os.path.isdir(env_cache_dir):
+            return env_cache_dir
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        hf_home = os.path.expanduser(hf_home)
+        hf_home_hub = os.path.join(hf_home, "hub")
+        if os.path.isdir(hf_home_hub):
+            return hf_home_hub
+        if os.path.isdir(hf_home):
+            return hf_home
+
+    return None
+
+
+def _locate_offline_checkpoint(model_id: str) -> Optional[str]:
+    """
+    Locate a locally cached checkpoint following the HF_HOME/HF_CACHE_DIR layout.
+
+    Args:
+        model_id: HuggingFace model identifier (e.g., "Synthyra/Profluent-E1-600M")
+
+    Returns:
+        Path to cached checkpoint directory, or None if not found
+    """
+    direct_path = os.path.join(HF_CACHE_DIR, model_id)
+    if os.path.isdir(direct_path):
+        return direct_path
+
+    repo_dir = os.path.join(HF_CACHE_DIR, f"models--{model_id.replace('/', '--')}")
+    snapshots_dir = os.path.join(repo_dir, "snapshots")
+    refs_main = os.path.join(repo_dir, "refs", "main")
+
+    if os.path.isfile(refs_main):
+        with open(refs_main, "r", encoding="utf-8") as ref_file:
+            ref = ref_file.read().strip()
+        resolved = os.path.join(snapshots_dir, ref)
+        if os.path.isdir(resolved):
+            return resolved
+
+    if os.path.isdir(snapshots_dir):
+        snapshot_dirs = [
+            os.path.join(snapshots_dir, d)
+            for d in os.listdir(snapshots_dir)
+            if os.path.isdir(os.path.join(snapshots_dir, d))
+        ]
+        if snapshot_dirs:
+            snapshot_dirs.sort(key=os.path.getmtime, reverse=True)
+            return snapshot_dirs[0]
+
+    return None
 
 
 class ClearCacheCallback(TrainerCallback):
@@ -73,30 +150,67 @@ class MetricRenameCallback(TrainerCallback):
             logs.update(new_logs)
 
 
-class CompileFlexAttentionForEvalCallback(TrainerCallback):
+class CompileFlexAttentionCallback(TrainerCallback):
     """
-    Informational callback for evaluation.
+    Callback to compile flex_attention at the start of training for improved performance.
 
-    Note: torch.compile for flex_attention doesn't work within the HuggingFace Trainer
-    because PyTorch's internal flex_attention dispatch still falls back to dense O(n²)
-    attention. This callback now just logs reminders about proper evaluation settings.
+    This callback attempts to compile flex_attention using torch.compile() at the start
+    of training. Compilation can significantly improve training speed by generating optimized
+    fused kernels instead of materializing the full scores matrix.
 
-    For accurate evaluation metrics, use evaluate_original_model_hf.py after training.
+    Note: If compilation fails or is not available, training will continue with the
+    uncompiled version. The callback will log warnings in such cases.
     """
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self._logged_once = False
+        self._compiled = False
+        self._logged_eval_reminder = False
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Compile flex_attention at the start of training."""
+        if self._compiled:
+            return
+
+        try:
+            # Import the compilation function from modeling_e1
+            # Note: modeling_e1 should be importable when training scripts are run
+            from modeling_e1 import compile_flex_attention_if_enabled
+
+            self.logger.info(
+                "Attempting to compile flex_attention for training (this may take a moment)..."
+            )
+            success = compile_flex_attention_if_enabled(enabled=True)
+            if success:
+                self._compiled = True
+                self.logger.info(
+                    "flex_attention compilation successful. Training will use optimized kernels."
+                )
+            else:
+                self.logger.warning(
+                    "flex_attention compilation was not successful. Training will continue "
+                    "with uncompiled version (may be slower)."
+                )
+        except ImportError as e:
+            self.logger.warning(
+                f"Could not import compile_flex_attention_if_enabled: {e}. "
+                "Training will continue with uncompiled flex_attention."
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Unexpected error during flex_attention compilation: {e}. "
+                "Training will continue with uncompiled version."
+            )
 
     def on_evaluate(self, args, state, control, **kwargs):
         """Log reminder about evaluation settings."""
-        if not self._logged_once:
+        if not self._logged_eval_reminder:
             self.logger.info(
                 "Note: Training evaluation uses reduced MSA parameters to avoid OOM. "
                 "For final metrics comparable to standalone evaluation, run "
                 "evaluate_original_model_hf.py separately after training."
             )
-            self._logged_once = True
+            self._logged_eval_reminder = True
 
 
 class MSADatasetEpochCallback(TrainerCallback):

@@ -3,8 +3,8 @@ general:
   gpu_id: "all"  # Specify GPUs to use: single GPU (e.g., "0"), multiple GPUs (e.g., "0,1"), or "all" for all available GPUs
 
 data:
-  homologs_dir: "/host/MMseqs2/rare_earth_results/a3m_files"  # Directory containing .a3m MSA files
-  swissprot_file: "/host/protein-metal-ion-binding/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
+  homologs_dir: "/hpcgpfs01/scratch/xdai/combined_a3m_files"  # Directory containing .a3m MSA files
+  swissprot_file: "/sdcc/u/xdai/ESMBind_private/multi_modal_binding/data_processing/rare_earth/swiss_prot.csv"  # CSV file with SwissProt sequences
   val_split_ratio: 0.1
 
 training:
@@ -30,13 +30,13 @@ training:
   
   # Evaluation and logging settings
   eval_strategy: "steps"  # Options: "no", "steps", "epoch"
-  eval_steps: 200  # Evaluate every N training steps
+  eval_steps: 300  # Evaluate every N training steps
   eval_batch_size: 1  # Evaluation batch size (smaller for longer sequences with MSA context)
   max_eval_samples: 5000  # Maximum number of samples to evaluate per validation set. Limits memory usage during evaluation.
-  eval_accumulation_steps: 40  # Move predictions to CPU every N steps during evaluation to prevent OOM.
+  eval_accumulation_steps: 30  # Move predictions to CPU every N steps during evaluation to prevent OOM.
                                 # Lower values use less GPU memory but may be slightly slower.
   logging_strategy: "steps"  # Options: "no", "steps", "epoch"
-  logging_steps: 40  # Log metrics every N training steps
+  logging_steps: 30  # Log metrics every N training steps
   
   # Early stopping configuration
   early_stopping:

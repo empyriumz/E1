@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -23,6 +24,15 @@ from tqdm.auto import tqdm
 
 logger = logging.get_logger(__name__)
 
+# Ensure KERNELS_CACHE is set if HF_CACHE_DIR is available but KERNELS_CACHE is not
+# This helps with offline mode when the cache directory needs to be specified
+# Must be set before importing kernels package since CACHE_DIR is set at import time
+if "KERNELS_CACHE" not in os.environ and "HF_KERNELS_CACHE" not in os.environ:
+    hf_cache_dir = os.environ.get("HF_CACHE_DIR")
+    if hf_cache_dir and os.path.isdir(hf_cache_dir):
+        os.environ["KERNELS_CACHE"] = hf_cache_dir
+        logger.debug(f"Set KERNELS_CACHE to {hf_cache_dir} for offline kernel loading")
+
 ### Establish attention compatibility
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -41,8 +51,8 @@ try:
         _create_sparse_block_from_block_mask,
     )
 
-    # Do not compile flex_attention during training as it causes illegal memory access
-    # errors in the backward pass. Compilation can be enabled for inference only.
+    # Compilation flag to track if flex_attention has been compiled.
+    # Compilation can improve performance by generating optimized fused kernels.
     _flex_attention_compiled = False
 
 except ImportError:
@@ -56,6 +66,11 @@ try:
     from kernels import get_kernel
 
     layer_norm = get_kernel("kernels-community/triton-layer-norm")
+except ImportError as e:
+    logger.warning(
+        f"Failed to import kernels package: {e}; Will be using PyTorch RMSNorm instead"
+    )
+    layer_norm = None
 except Exception as e:
     logger.warning(
         f"Failed to load triton layer norm kernel: {e}; Will be using PyTorch RMSNorm instead"
@@ -73,10 +88,12 @@ def is_flash_attention_available() -> bool:
 
 def compile_flex_attention_if_enabled(enabled: bool = False) -> bool:
     """
-    Compile flex_attention for inference if enabled.
+    Compile flex_attention using torch.compile() if enabled.
 
-    Note: Compilation should only be enabled during inference, not training,
-    as it causes illegal memory access errors in the backward pass.
+    Compilation can significantly improve performance by generating optimized
+    fused kernels instead of materializing the full scores matrix. This function
+    can be called at the start of training to compile flex_attention for the
+    entire training process.
 
     Args:
         enabled: Whether to compile flex_attention
@@ -106,9 +123,7 @@ def compile_flex_attention_if_enabled(enabled: bool = False) -> bool:
         return False
 
     try:
-        logger.info(
-            "Compiling flex_attention for inference (this may take a moment)..."
-        )
+        logger.info("Compiling flex_attention (this may take a moment)...")
         flex_attention = torch.compile(flex_attention, dynamic=True)
         _flex_attention_compiled = True
         logger.info("flex_attention compilation successful")
@@ -518,32 +533,73 @@ block_mask_creator = (
     direct_block_mask if os.getenv("FAST_BLOCK_MASK", "1") == "1" else doc_id_mask
 )
 PAD_TOKEN_ID = 0
+TOKENIZER_ENV_VAR = "E1_TOKENIZER_PATH"
+TOKENIZER_FILENAME = "tokenizer.json"
 
 # Cache tokenizer to avoid repeated downloads
 _tokenizer_cache: Tokenizer | None = None
 
+# Temporary storage for checkpoint path during model loading
+# This allows get_tokenizer() to access the checkpoint path when called from E1Config.__init__()
+_current_checkpoint_path: Optional[str] = None
 
-def get_tokenizer() -> Tokenizer:
-    global _tokenizer_cache
+
+def get_tokenizer(checkpoint_path: Optional[str] = None) -> Tokenizer:
+    """
+    Load E1 tokenizer from local cache or checkpoint directory.
+
+    Args:
+        checkpoint_path: Optional path to model checkpoint directory where tokenizer.json might be located.
+
+    Returns:
+        Tokenizer instance
+    """
+    global _tokenizer_cache, _current_checkpoint_path
 
     # Return cached tokenizer if available
     if _tokenizer_cache is not None:
         return _tokenizer_cache
 
-    try:
-        fname = os.path.join(os.path.dirname(__file__), "tokenizer.json")
-        tokenizer: Tokenizer = Tokenizer.from_file(fname)
-    except:
-        logger.info(
-            "E1 Tokenizer not found in local directory, downloading from Hugging Face"
-        )
-        from huggingface_hub import hf_hub_download
+    # Use provided checkpoint_path, or fall back to _current_checkpoint_path (set during model loading)
+    effective_checkpoint_path = checkpoint_path or _current_checkpoint_path
 
-        # hf_hub_download caches files, so subsequent calls will use cached version
-        fname = hf_hub_download(
-            repo_id="Synthyra/Profluent-E1-150M", filename="tokenizer.json"
+    module_dir = Path(__file__).resolve().parent
+    repo_root = module_dir.parent
+    search_paths: list[Path] = []
+
+    def _add_candidate(path: Path | None):
+        if path is None:
+            return
+        normalized = path.expanduser()
+        if normalized.is_dir():
+            normalized = normalized / TOKENIZER_FILENAME
+        if normalized not in search_paths:
+            search_paths.append(normalized)
+
+    if effective_checkpoint_path:
+        checkpoint = Path(effective_checkpoint_path)
+        _add_candidate(checkpoint)
+
+    env_override = os.environ.get(TOKENIZER_ENV_VAR)
+    if env_override:
+        _add_candidate(Path(env_override))
+
+    _add_candidate(module_dir / TOKENIZER_FILENAME)
+    _add_candidate(repo_root / "src" / "E1" / TOKENIZER_FILENAME)
+
+    tokenizer = None
+    for candidate in search_paths:
+        candidate = candidate.expanduser()
+        if candidate.is_file():
+            tokenizer = Tokenizer.from_file(str(candidate))
+            logger.info(f"Loaded tokenizer from: {candidate}")
+            break
+
+    if tokenizer is None:
+        raise FileNotFoundError(
+            "Failed to load tokenizer. Copy tokenizer.json next to the checkpoint, "
+            f"set {TOKENIZER_ENV_VAR}, or place it under src/E1/tokenizer.json."
         )
-        tokenizer: Tokenizer = Tokenizer.from_file(fname)
 
     assert (
         tokenizer.padding["pad_id"] == PAD_TOKEN_ID
@@ -2045,7 +2101,36 @@ class E1PreTrainedModel(PreTrainedModel):
     def from_pretrained(  # type: ignore[no-untyped-def]
         cls, pretrained_model_name_or_path: str | os.PathLike | None, *args, **kwargs
     ) -> "E1PreTrainedModel":
-        return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        global _current_checkpoint_path
+        # Store checkpoint path temporarily so get_tokenizer() can access it during config loading
+        checkpoint_path_str = (
+            str(pretrained_model_name_or_path)
+            if pretrained_model_name_or_path
+            else None
+        )
+        if checkpoint_path_str:
+            # Expand user path and check if it's a directory
+            expanded_path = os.path.expanduser(checkpoint_path_str)
+            if os.path.isdir(expanded_path):
+                _current_checkpoint_path = expanded_path
+            else:
+                # Try to resolve it using the same logic as load_e1_model
+                try:
+                    from training.finetune_utils import _locate_offline_checkpoint
+
+                    resolved = _locate_offline_checkpoint(checkpoint_path_str)
+                    if resolved and os.path.isdir(resolved):
+                        _current_checkpoint_path = resolved
+                except ImportError:
+                    # If finetune_utils is not available, just use the path as-is
+                    _current_checkpoint_path = expanded_path
+        try:
+            return super().from_pretrained(
+                pretrained_model_name_or_path, *args, **kwargs
+            )
+        finally:
+            # Clear the checkpoint path after loading
+            _current_checkpoint_path = None
 
 
 class E1Model(E1PreTrainedModel, EmbeddingMixin):

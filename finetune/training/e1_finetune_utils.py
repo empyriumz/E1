@@ -6,6 +6,11 @@ from typing import Dict, Optional, Tuple
 
 from peft import LoraConfig, get_peft_model
 from modeling_e1 import E1ForMaskedLM, E1BatchPreparer
+from training.finetune_utils import (
+    _locate_offline_checkpoint,
+    _resolve_hf_cache_dir,
+    HF_CACHE_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +40,48 @@ def load_e1_model(
     elif model_dtype == "bfloat16":
         dtype = torch.bfloat16
 
-    # Load model with trust_remote_code=True (required for E1 custom model classes)
-    try:
-        if dtype is not None:
-            model = E1ForMaskedLM.from_pretrained(
+    # Resolve checkpoint path (local directory vs HF repo id) and cache location
+    checkpoint_path = os.path.expanduser(checkpoint)
+    checkpoint_is_local = os.path.isdir(checkpoint_path)
+
+    if checkpoint_is_local:
+        resolved_checkpoint = checkpoint_path
+        cache_dir = None
+    else:
+        resolved_checkpoint = _locate_offline_checkpoint(checkpoint)
+        cache_dir = (
+            HF_CACHE_DIR if os.path.isdir(HF_CACHE_DIR) else _resolve_hf_cache_dir()
+        )
+
+        if resolved_checkpoint is None:
+            resolved_checkpoint = checkpoint
+            logger.warning(
+                "Offline cache miss for '%s'. Attempting to load directly from HuggingFace ID.",
                 checkpoint,
-                trust_remote_code=True,
-                dtype=dtype,
             )
         else:
-            model = E1ForMaskedLM.from_pretrained(
+            logger.info(
+                "Resolved offline checkpoint for '%s' at '%s'",
                 checkpoint,
-                trust_remote_code=True,
+                resolved_checkpoint,
             )
+
+    if cache_dir:
+        logger.info(f"Using HuggingFace cache directory: {cache_dir}")
+
+    # Load model with trust_remote_code=True (required for E1 custom model classes)
+    # Use local_files_only=True for offline environments
+    load_kwargs = {
+        "trust_remote_code": True,
+        "local_files_only": True,
+    }
+    if cache_dir:
+        load_kwargs["cache_dir"] = cache_dir
+    if dtype is not None:
+        load_kwargs["dtype"] = dtype
+
+    try:
+        model = E1ForMaskedLM.from_pretrained(resolved_checkpoint, **load_kwargs)
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
