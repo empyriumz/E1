@@ -603,6 +603,12 @@ def train(config, output_path=None):
     logger.info("=" * 80)
     logger.info(f"Output directory: {output_dir}")
 
+    # Determine mixed precision setting early (needed for checkpoint validation)
+    # Note: bf16 does NOT use a gradient scaler, only fp16 does
+    mixed_precision = train_conf.get("mixed_precision", None)
+    use_fp16 = mixed_precision == "fp16"
+    use_bf16 = mixed_precision == "bf16"
+
     # Check for resume from checkpoint
     resume_from_checkpoint = train_conf.get("resume_from_checkpoint", None)
     save_best_checkpoint = train_conf.get("save_best_checkpoint", True)
@@ -616,13 +622,17 @@ def train(config, output_path=None):
             )
 
         # Check for essential checkpoint files (LoRA-specific)
+        # scaler.pt is only required when using fp16 (bf16 doesn't need it)
         required_files = [
             "trainer_state.json",
             "optimizer.pt",
-            "scaler.pt",
             "scheduler.pt",
             "adapter_model.safetensors",
         ]
+        # Only require scaler.pt when using fp16
+        if use_fp16:
+            required_files.append("scaler.pt")
+
         missing_files = [
             f
             for f in required_files
@@ -785,12 +795,9 @@ def train(config, output_path=None):
     )
 
     # Mixed Precision Settings
-    fp16 = False
-    bf16 = False
-    if train_conf["mixed_precision"] == "fp16":
-        fp16 = True
-    elif train_conf["mixed_precision"] == "bf16":
-        bf16 = True
+    # Note: use_fp16 and use_bf16 were already determined earlier for checkpoint validation
+    fp16 = use_fp16
+    bf16 = use_bf16
     fp16_full_eval = fp16
     bf16_full_eval = bf16
 
@@ -1000,7 +1007,133 @@ def train(config, output_path=None):
     logger.info("=" * 80)
     logger.info("Starting training...")
 
-    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    # Helper function to find the latest checkpoint
+    def find_latest_checkpoint(output_dir):
+        """Find the most recent checkpoint directory.
+
+        Note: scaler.pt is only required when using fp16. bf16 doesn't use a gradient scaler.
+        """
+        checkpoint_pattern = os.path.join(output_dir, "checkpoint-*")
+        checkpoint_dirs = glob.glob(checkpoint_pattern)
+
+        # Also check best_checkpoint directory if it exists
+        best_checkpoint_dir = os.path.join(output_dir, "best_checkpoint")
+        if os.path.exists(best_checkpoint_dir):
+            checkpoint_dirs.append(best_checkpoint_dir)
+
+        if not checkpoint_dirs:
+            return None
+
+        # Sort by modification time (most recent first)
+        checkpoint_dirs.sort(key=os.path.getmtime, reverse=True)
+
+        # Verify checkpoint has required files
+        # scaler.pt is only required when using fp16 (bf16 doesn't need it)
+        for checkpoint_path in checkpoint_dirs:
+            required_files = [
+                "trainer_state.json",
+                "optimizer.pt",
+                "scheduler.pt",
+                "adapter_model.safetensors",
+            ]
+            # Only require scaler.pt when using fp16
+            if use_fp16:
+                required_files.append("scaler.pt")
+
+            missing_files = [
+                f
+                for f in required_files
+                if not os.path.exists(os.path.join(checkpoint_path, f))
+            ]
+            if not missing_files:
+                return checkpoint_path
+
+        return None
+
+    # OOM error handling with automatic checkpoint resumption
+    max_oom_retries = train_conf.get("max_oom_retries", 3)
+    oom_retry_count = 0
+    current_resume_checkpoint = resume_from_checkpoint
+
+    while oom_retry_count <= max_oom_retries:
+        try:
+            trainer.train(resume_from_checkpoint=current_resume_checkpoint)
+            # Training completed successfully
+            break
+        except torch.cuda.OutOfMemoryError as e:
+            oom_retry_count += 1
+            logger.error("=" * 80)
+            logger.error(
+                f"CUDA Out of Memory Error (attempt {oom_retry_count}/{max_oom_retries + 1})"
+            )
+            logger.error("=" * 80)
+            logger.error(f"Error details: {str(e)}")
+
+            # Log training progress if available
+            if hasattr(trainer.state, "global_step"):
+                logger.error(
+                    f"Training failed at global step: {trainer.state.global_step}"
+                )
+            if hasattr(trainer.state, "epoch"):
+                logger.error(f"Training failed at epoch: {trainer.state.epoch:.2f}")
+
+            # Clear GPU cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("GPU cache cleared")
+
+                # Log current GPU memory usage
+                for i in range(torch.cuda.device_count()):
+                    allocated = torch.cuda.memory_allocated(i) / 1024**3
+                    reserved = torch.cuda.memory_reserved(i) / 1024**3
+                    logger.info(
+                        f"GPU {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved"
+                    )
+
+            # Find the latest checkpoint
+            latest_checkpoint = find_latest_checkpoint(output_dir)
+
+            if latest_checkpoint:
+                logger.info(f"Found latest checkpoint: {latest_checkpoint}")
+                current_resume_checkpoint = latest_checkpoint
+
+                # Check if we can still retry
+                if oom_retry_count <= max_oom_retries:
+                    logger.info(
+                        f"Resuming training from checkpoint (retry {oom_retry_count}/{max_oom_retries})..."
+                    )
+                    # Continue the while loop to retry
+                    continue
+                else:
+                    # This should not happen due to while loop condition, but handle it anyway
+                    logger.error(
+                        "Maximum OOM retry limit reached. Training cannot continue."
+                    )
+                    raise RuntimeError(
+                        f"Training failed after {max_oom_retries} OOM retries. "
+                        f"Last checkpoint: {latest_checkpoint}. "
+                        "Consider reducing batch_size, max_query_length, or enabling gradient_checkpointing."
+                    )
+            else:
+                logger.error("No valid checkpoint found to resume from.")
+                logger.warning(
+                    "Cannot resume - no checkpoint available. "
+                    "This may indicate OOM occurred before first checkpoint save. "
+                    "Consider reducing batch_size or max_query_length in config."
+                )
+                raise RuntimeError(
+                    "OOM error occurred and no checkpoint is available for resumption. "
+                    "Please reduce batch_size, max_query_length, or enable gradient_checkpointing."
+                )
+
+    # If we exit the loop without breaking (shouldn't happen, but handle it)
+    if oom_retry_count > max_oom_retries:
+        latest_checkpoint = find_latest_checkpoint(output_dir)
+        raise RuntimeError(
+            f"Training failed after {max_oom_retries} OOM retries. "
+            f"Last checkpoint: {latest_checkpoint if latest_checkpoint else 'None'}. "
+            "Consider reducing batch_size, max_query_length, or enabling gradient_checkpointing."
+        )
 
     # Save the best model weights
     best_model_path = os.path.join(output_dir, "best_model.pth")
