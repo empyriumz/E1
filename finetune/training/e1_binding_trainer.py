@@ -24,7 +24,7 @@ from torchmetrics.classification import (
     BinaryConfusionMatrix,
     BinaryROC,
 )
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import logging
 
@@ -396,9 +396,9 @@ class E1BindingTrainer:
 
             total_loss += outputs.loss.item()
             if getattr(outputs, "loss_bce", None) is not None:
-                total_loss_bce += float(outputs.loss_bce)
+                total_loss_bce += float(outputs.loss_bce.detach())
             if getattr(outputs, "loss_mlm", None) is not None:
-                total_loss_mlm += float(outputs.loss_mlm)
+                total_loss_mlm += float(outputs.loss_mlm.detach())
             num_batches += 1
 
             # Collect predictions for metrics

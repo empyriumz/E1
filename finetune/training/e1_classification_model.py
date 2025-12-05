@@ -23,6 +23,8 @@ class E1ResidueClassificationOutput(ModelOutput):
     """Output class for E1 residue classification model."""
 
     loss: Optional[torch.FloatTensor] = None
+    loss_bce: Optional[torch.FloatTensor] = None
+    loss_mlm: Optional[torch.FloatTensor] = None
     logits: Optional[torch.FloatTensor] = None
     last_hidden_state: Optional[torch.FloatTensor] = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
@@ -90,8 +92,18 @@ class E1ForResidueClassification(E1ForMaskedLM):
                 "e1_model must provide an mlm_head (expected E1ForMaskedLM checkpoint)."
             )
 
+        # Cleanup unused randomly initialized model from super().__init__
+        # This prevents it from sitting on CPU and causing DDP errors
+        if hasattr(self, "model"):
+            del self.model
+
         # Reuse backbone and MLM head from provided model
         self.e1_backbone = e1_model.model if hasattr(e1_model, "model") else e1_model
+
+        # Alias self.model to backbone for compatibility with inherited methods (like _embed)
+        # Note: Since e1_backbone is part of _original_model (PeftModel), this is an alias to a GPU-resident module
+        self.model = self.e1_backbone
+
         self._original_model = e1_model
         self.mlm_head = e1_model.mlm_head
 
@@ -134,10 +146,13 @@ class E1ForResidueClassification(E1ForMaskedLM):
             param.requires_grad = False
         logger.info("E1 backbone parameters frozen")
 
+    # NOTE: Removed custom to() method. The default nn.Module.to() implementation
+    # correctly recurses into all submodules (including _original_model and classifier_heads).
+    # The previous manual override failed to move self.model (if it existed) or other attributes.
+
     def to(self, device=None, dtype=None, *args, **kwargs):
         """Move model to device and/or dtype."""
-        self._original_model.to(device=device, dtype=dtype, *args, **kwargs)
-        self.classifier_heads.to(device=device, dtype=dtype, *args, **kwargs)
+        super().to(device=device, dtype=dtype, *args, **kwargs)
         return self
 
     def get_encoder_output(
@@ -249,6 +264,8 @@ class E1ForResidueClassification(E1ForMaskedLM):
 
         return E1ResidueClassificationOutput(
             loss=loss,
+            loss_bce=loss,
+            loss_mlm=None,
             logits=logits,
             last_hidden_state=hidden_states,
         )
