@@ -1,6 +1,14 @@
 import random
 import argparse
 import os
+import sys
+# Add src directory to Python path so E1 module can be imported without installing the package
+# This script is in finetune/, so we need to go up one level to reach src/
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+src_path = os.path.join(project_root, "src")
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
 import json
 import torch
 import numpy as np
@@ -10,9 +18,9 @@ from pathlib import Path
 from typing import Optional, Dict
 
 # E1 imports
-from E1.batch_preparer import E1BatchPreparer
-from E1.modeling import E1ForMaskedLM
-from E1.msa_sampling import sample_context
+from src.E1.batch_preparer import E1BatchPreparer
+from src.E1.modeling import E1ForMaskedLM
+from src.E1.msa_sampling import sample_context
 
 # Try to import PEFT for finetuned model support
 try:
@@ -552,6 +560,7 @@ def main():
             "Profluent-Bio/E1-150m",
             "Profluent-Bio/E1-300m",
             "Profluent-Bio/E1-600m",
+            "Synthyra/Profluent-E1-600M",
         ],
         help="E1 model to use",
     )
