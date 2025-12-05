@@ -27,6 +27,7 @@ from torchmetrics.classification import (
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import logging
+from .metrics import high_recall_auprc
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +430,9 @@ class E1BindingTrainer:
             "loss_mlm": total_loss_mlm / max(num_batches, 1),
             "auc": self.metric_auc(all_probs, all_labels).item(),
             "auprc": self.metric_auprc(all_probs, all_labels).item(),
+            "high_recall_auprc": high_recall_auprc(
+                all_labels, all_probs, recall_threshold=0.7
+            ),
         }
 
         # Track metrics
@@ -506,6 +510,7 @@ class E1BindingTrainer:
 
         val_auc = self.metric_auc(all_probs, all_labels).item()
         val_auprc = self.metric_auprc(all_probs, all_labels).item()
+        val_hra = high_recall_auprc(all_labels, all_probs, recall_threshold=0.7)
 
         # Find optimal threshold
         threshold_method = getattr(self.conf.training, "threshold_method", "youden")
@@ -525,6 +530,7 @@ class E1BindingTrainer:
             "loss_mlm": total_loss_mlm / max(num_batches, 1),
             "auc": val_auc,
             "auprc": val_auprc,
+            "high_recall_auprc": val_hra,
             "f1": threshold_results["f1"],
             "mcc": threshold_results["mcc"],
             "threshold": threshold_results["threshold"],

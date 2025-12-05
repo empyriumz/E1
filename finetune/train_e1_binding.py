@@ -302,6 +302,9 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     datasets = {}
     pos_weights = {}
 
+    # Store val metrics per ion for each epoch to copy when we find a new best
+    val_metrics_per_ion = {}
+
     for ion in ion_list:
         train_dataset, val_dataset, pos_weight = create_binding_datasets_from_config(
             data_conf=dict(conf.data),
@@ -375,14 +378,17 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     trainer.reset_metrics_tracker()
 
     # Training loop
-    best_auprc_per_ion = {ion: 0.0 for ion in ion_list}
-    best_thresholds = {ion: {"f1": 0.5, "mcc": 0.5} for ion in ion_list}
+    # Training loop
+    best_epoch_metrics = None
+    best_total_hra = 0.0
     best_total_auprc = 0.0
     best_model_path = None
 
     for epoch in range(1, num_epochs + 1):
         total_train_auprc = 0.0
         total_val_auprc = 0.0
+        total_train_hra = 0.0
+        total_val_hra = 0.0
 
         # Update dataset epoch for MSA sampling variation
         for ion in ion_list:
@@ -430,14 +436,14 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
                     f"Epoch {epoch}/{num_epochs} [{ion}] - "
                     f"Train Loss: {train_metrics['loss']:.4f} "
                     f"(BCE: {train_loss_bce_str}, MLM: {train_loss_mlm_str}), "
-                    f"AUC: {train_metrics['auc']:.3f}, AUPRC: {train_metrics['auprc']:.3f}"
+                    f"AUC: {train_metrics['auc']:.3f}, AUPRC: {train_metrics['auprc']:.3f}, HRA: {train_metrics['high_recall_auprc']:.3f}"
                 )
 
                 cm = val_metrics["confusion_matrix"]
                 logging.info(
                     f"Val Loss: {val_metrics['loss']:.4f} "
                     f"(BCE: {val_loss_bce_str}, MLM: {val_loss_mlm_str}), "
-                    f"AUC: {val_metrics['auc']:.3f}, AUPRC: {val_metrics['auprc']:.3f}, "
+                    f"AUC: {val_metrics['auc']:.3f}, AUPRC: {val_metrics['auprc']:.3f}, HRA: {val_metrics['high_recall_auprc']:.3f}, "
                     f"MCC: {val_metrics['mcc']:.3f} @ {val_metrics['threshold']:.3f}, "
                     f"F1: {val_metrics['f1']:.3f} @ {val_metrics['threshold']:.3f}"
                 )
@@ -450,19 +456,27 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
 
             total_train_auprc += train_metrics["auprc"]
             total_val_auprc += val_metrics["auprc"]
+            total_train_hra += train_metrics["high_recall_auprc"]
+            total_val_hra += val_metrics["high_recall_auprc"]
 
-            if val_metrics["auprc"] > best_auprc_per_ion[ion]:
-                best_auprc_per_ion[ion] = val_metrics["auprc"]
-                best_thresholds[ion]["f1"] = val_metrics["threshold"]
-                best_thresholds[ion]["mcc"] = val_metrics["threshold"]
+            # Store metrics for this ion for potential best epoch update
+            val_metrics_per_ion[ion] = val_metrics
 
-        # Average validation AUPRC across all ions
+        # Average validation AUPRC/HRA across all ions
         avg_val_auprc = total_val_auprc / len(ion_list)
+        avg_val_hra = total_val_hra / len(ion_list)
 
-        # Save best model (only on main process)
+        # Save best model based on HRA (high recall AUPRC)
         save_model = getattr(conf.training, "save_model", True)
-        if avg_val_auprc > best_total_auprc:
+        if avg_val_hra > best_total_hra:
+            best_total_hra = avg_val_hra
             best_total_auprc = avg_val_auprc
+
+            # Store full metrics for this best epoch
+            best_epoch_metrics = {}
+            for ion in ion_list:
+                best_epoch_metrics[ion] = val_metrics_per_ion[ion].copy()
+
             if save_model and is_main_process():
                 fold_output_path = f"{base_output_path}/fold_{fold_idx}"
                 Path(fold_output_path).mkdir(parents=True, exist_ok=True)
@@ -472,26 +486,26 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
                     path=best_model_path,
                     epoch=epoch,
                     optimizer=optimizer,
-                    metrics={"auprc": avg_val_auprc},
+                    metrics={"auprc": avg_val_auprc, "hra": avg_val_hra},
                     additional_state={
                         "ions": ion_list,
-                        "best_thresholds": best_thresholds,
+                        "best_epoch_metrics": best_epoch_metrics,
                         "fold": fold_idx,
                     },
                 )
                 logging.info(
-                    f"New best model at epoch {epoch} with AUPRC: {best_total_auprc:.3f} (saved)"
+                    f"New best model at epoch {epoch} with HRA: {best_total_hra:.3f} (AUPRC: {avg_val_auprc:.3f}) (saved)"
                 )
             elif is_main_process():
                 logging.info(
-                    f"New best model at epoch {epoch} with AUPRC: {best_total_auprc:.3f} (not saved)"
+                    f"New best model at epoch {epoch} with HRA: {best_total_hra:.3f} (AUPRC: {avg_val_auprc:.3f}) (not saved)"
                 )
 
         # Learning rate scheduling
         scheduler.step()
 
-        # Early stopping
-        if early_stopper.early_stop(avg_val_auprc):
+        # Early stopping on HRA
+        if early_stopper.early_stop(avg_val_hra):
             if is_main_process():
                 logging.info(f"Early stopping at epoch {epoch}")
             break
@@ -509,19 +523,25 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     # Return results
     fold_results = {
         "fold": fold_idx,
-        "best_auprc_per_ion": best_auprc_per_ion,
+        "best_epoch_metrics": best_epoch_metrics,
         "best_total_auprc": best_total_auprc,
-        "best_thresholds": best_thresholds,
+        "best_total_hra": best_total_hra,
         "model_path": best_model_path,
         "oof_predictions": trainer.oof_predictions.copy(),
     }
 
     if is_main_process():
-        logging.info(f"\nFold {fold_idx} Training Summary")
+        logging.info(f"\nFold {fold_idx} Training Summary (Best Epoch by HRA)")
         logging.info(f"{'='*50}")
-        for ion in ion_list:
-            logging.info(f"{ion}: Best AUPRC = {best_auprc_per_ion[ion]:.3f}")
+        if best_epoch_metrics:
+            for ion in ion_list:
+                m = best_epoch_metrics[ion]
+                logging.info(
+                    f"{ion}: AUPRC = {m['auprc']:.3f}, HRA = {m['high_recall_auprc']:.3f}, "
+                    f"F1 = {m['f1']:.3f}, MCC = {m['mcc']:.3f} @ {m['threshold']:.3f}"
+                )
         logging.info(f"Average AUPRC: {best_total_auprc:.3f}")
+        logging.info(f"Average HRA: {best_total_hra:.3f}")
         if best_model_path is not None:
             logging.info(f"Best model saved to: {best_model_path}")
 
@@ -586,14 +606,28 @@ def log_cv_summary(all_fold_results: list, conf):
     logging.info(f"{'='*120}")
 
     ion_list = conf.training.ions
-    fold_auprcs = {ion: [] for ion in ion_list}
+    ion_metrics = {
+        ion: {"auprc": [], "hra": [], "f1": [], "mcc": []} for ion in ion_list
+    }
 
     for fold_result in all_fold_results:
         logging.info(f"\nFold {fold_result['fold']}:")
+        best_metrics = fold_result["best_epoch_metrics"]
+
         for ion in ion_list:
-            auprc = fold_result["best_auprc_per_ion"][ion]
-            fold_auprcs[ion].append(auprc)
-            logging.info(f"  {ion}: AUPRC = {auprc:.3f}")
+            if best_metrics and ion in best_metrics:
+                m = best_metrics[ion]
+                ion_metrics[ion]["auprc"].append(m["auprc"])
+                ion_metrics[ion]["hra"].append(m["high_recall_auprc"])
+                ion_metrics[ion]["f1"].append(m["f1"])
+                ion_metrics[ion]["mcc"].append(m["mcc"])
+
+                logging.info(
+                    f"  {ion}: AUPRC = {m['auprc']:.3f}, HRA = {m['high_recall_auprc']:.3f}, "
+                    f"F1 = {m['f1']:.3f}, MCC = {m['mcc']:.3f} @ {m['threshold']:.3f}"
+                )
+
+        logging.info(f"  Average HRA: {fold_result.get('best_total_hra', 'N/A')}")
         logging.info(f"  Average AUPRC: {fold_result['best_total_auprc']:.3f}")
         if fold_result.get("model_path"):
             logging.info(f"  Model saved: {fold_result['model_path']}")
@@ -604,13 +638,18 @@ def log_cv_summary(all_fold_results: list, conf):
     logging.info(f"{'='*60}")
 
     for ion in ion_list:
-        mean_auprc = np.mean(fold_auprcs[ion])
-        std_auprc = np.std(fold_auprcs[ion])
-        logging.info(f"{ion}: {mean_auprc:.3f} ± {std_auprc:.3f}")
+        mean_auprc = np.mean(ion_metrics[ion]["auprc"])
+        std_auprc = np.std(ion_metrics[ion]["auprc"])
+        mean_hra = np.mean(ion_metrics[ion]["hra"])
+        std_hra = np.std(ion_metrics[ion]["hra"])
+
+        logging.info(f"{ion}:")
+        logging.info(f"  AUPRC: {mean_auprc:.3f} ± {std_auprc:.3f}")
+        logging.info(f"  HRA:   {mean_hra:.3f} ± {std_hra:.3f}")
 
     overall_mean = np.mean([result["best_total_auprc"] for result in all_fold_results])
     overall_std = np.std([result["best_total_auprc"] for result in all_fold_results])
-    logging.info(f"Average AUPRC: {overall_mean:.3f} ± {overall_std:.3f}")
+    logging.info(f"Overall Average AUPRC: {overall_mean:.3f} ± {overall_std:.3f}")
 
 
 def main(conf):

@@ -18,10 +18,10 @@ data:
 
 training:
   # Ion types to train on (each gets its own classification head)
-  ions: ["CA", "ZN", "LREE", "HREE", "REE"]
+  ions: ["CA", "ZN", "MN", "LREE", "HREE", "REE"]
   
   # Training epochs
-  epochs: 30
+  epochs: 40
   
   # Batch size (smaller due to E1's large context)
   batch_size: 2
@@ -37,10 +37,10 @@ training:
   mlm_probability: 0.15
 
   # Weight decay for AdamW
-  weight_decay: 0.01
+  weight_decay: 0.035
   
   # Warmup epochs before full learning rate
-  warmup_epochs: 3
+  warmup_epochs: 5
   
   # Minimum learning rate during cosine decay
   min_lr: 1e-6
@@ -49,11 +49,11 @@ training:
   num_folds: 5
   
   # Early stopping patience (in epochs)
-  early_stop_patience: 7
+  early_stop_patience: 5
   
   # Positive class weight multiplier for BCE loss
   # Higher values give more weight to positive (binding) samples
-  pos_ratio_multiplier: 2.0
+  pos_ratio_multiplier: 5.0
   
   # Threshold optimization method: "youden", "f1", or "mcc"
   threshold_method: "youden"
@@ -68,7 +68,7 @@ training:
   compile_flex_attention: true
   
   # Data loading workers
-  num_workers: 16
+  num_workers: 2
   
   # Output directory
   output_dir: "results/e1_binding"
@@ -93,13 +93,13 @@ model:
   checkpoint: "Synthyra/Profluent-E1-600M"
   
   # Dropout rate for classification heads
-  dropout: 0.2
+  dropout: 0.3
 
 # LoRA configuration for efficient finetuning
 lora:
-  r: 16  # LoRA rank (lower = fewer parameters, higher = more capacity)
-  alpha: 32  # LoRA alpha (scaling factor, typically 2x rank)
-  lora_dropout: 0.1  # Dropout within LoRA layers
+  r: 8  # LoRA rank (lower = fewer parameters, higher = more capacity)
+  alpha: 16  # LoRA alpha (scaling factor, typically 2x rank)
+  lora_dropout: 0.2  # Dropout within LoRA layers
   bias: "none"  # Whether to train bias: "none", "all", or "lora_only"
   
   # Target modules for LoRA
