@@ -393,15 +393,35 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
             )
 
             if is_main_process():
+                train_loss_bce = train_metrics.get("loss_bce")
+                train_loss_mlm = train_metrics.get("loss_mlm")
+                val_loss_bce = val_metrics.get("loss_bce")
+                val_loss_mlm = val_metrics.get("loss_mlm")
+
+                train_loss_bce_str = (
+                    f"{train_loss_bce:.4f}" if train_loss_bce is not None else "n/a"
+                )
+                train_loss_mlm_str = (
+                    f"{train_loss_mlm:.4f}" if train_loss_mlm is not None else "n/a"
+                )
+                val_loss_bce_str = (
+                    f"{val_loss_bce:.4f}" if val_loss_bce is not None else "n/a"
+                )
+                val_loss_mlm_str = (
+                    f"{val_loss_mlm:.4f}" if val_loss_mlm is not None else "n/a"
+                )
+
                 logging.info(
                     f"Epoch {epoch}/{num_epochs} [{ion}] - "
-                    f"Train Loss: {train_metrics['loss']:.4f}, "
+                    f"Train Loss: {train_metrics['loss']:.4f} "
+                    f"(BCE: {train_loss_bce_str}, MLM: {train_loss_mlm_str}), "
                     f"AUC: {train_metrics['auc']:.3f}, AUPRC: {train_metrics['auprc']:.3f}"
                 )
 
                 cm = val_metrics["confusion_matrix"]
                 logging.info(
-                    f"Val Loss: {val_metrics['loss']:.4f}, "
+                    f"Val Loss: {val_metrics['loss']:.4f} "
+                    f"(BCE: {val_loss_bce_str}, MLM: {val_loss_mlm_str}), "
                     f"AUC: {val_metrics['auc']:.3f}, AUPRC: {val_metrics['auprc']:.3f}, "
                     f"MCC: {val_metrics['mcc']:.3f} @ {val_metrics['threshold']:.3f}, "
                     f"F1: {val_metrics['f1']:.3f} @ {val_metrics['threshold']:.3f}"

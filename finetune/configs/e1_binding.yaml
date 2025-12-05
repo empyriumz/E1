@@ -33,7 +33,7 @@ training:
   learning_rate: 0.0001
   
   # Auxiliary MLM loss weight (0 disables MLM)
-  mlm_weight: 0.4
+  mlm_weight: 1.0
   mlm_probability: 0.15
 
   # Weight decay for AdamW
