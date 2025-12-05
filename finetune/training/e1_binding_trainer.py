@@ -576,13 +576,33 @@ class E1BindingTrainer:
         lr = lr or self.conf.training.learning_rate
         weight_decay = weight_decay or getattr(self.conf.training, "weight_decay", 0.01)
 
-        optimizer = torch.optim.AdamW(
-            model_params,
-            lr=lr,
-            weight_decay=weight_decay,
-        )
+        # Prefer fused AdamW on CUDA for better throughput; fall back gracefully
+        fused_kwargs = {"fused": True} if torch.cuda.is_available() else {}
+        fused_used = False
+        try:
+            optimizer = torch.optim.AdamW(
+                model_params,
+                lr=lr,
+                weight_decay=weight_decay,
+                **fused_kwargs,
+            )
+            fused_used = fused_kwargs.get("fused", False)
+        except TypeError:
+            if fused_kwargs:
+                self.logger.warning(
+                    "torch.optim.AdamW does not support fused=True in this environment; "
+                    "falling back to standard AdamW"
+                )
+            optimizer = torch.optim.AdamW(
+                model_params,
+                lr=lr,
+                weight_decay=weight_decay,
+            )
 
-        self.logger.info(f"Optimizer: AdamW, lr={lr}, weight_decay={weight_decay}")
+        fused_msg = " (fused)" if fused_used else ""
+        self.logger.info(
+            f"Optimizer: AdamW{fused_msg}, lr={lr}, weight_decay={weight_decay}"
+        )
 
         return optimizer
 

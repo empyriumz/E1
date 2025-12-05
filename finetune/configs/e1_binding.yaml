@@ -24,10 +24,10 @@ training:
   epochs: 30
   
   # Batch size (smaller due to E1's large context)
-  batch_size: 1
+  batch_size: 2
   
   # Gradient accumulation steps (effective batch = batch_size * accum_steps)
-  accum_steps: 8
+  accum_steps: 4
   
   # Learning rate
   learning_rate: 0.0001
@@ -64,6 +64,8 @@ training:
   # Mixed precision training
   use_bf16: true
   model_dtype: "bfloat16"
+  # Compile PyTorch flex_attention with torch.compile for speed
+  compile_flex_attention: true
   
   # Data loading workers
   num_workers: 16
@@ -91,7 +93,7 @@ model:
   checkpoint: "Synthyra/Profluent-E1-600M"
   
   # Dropout rate for classification heads
-  dropout: 0.1
+  dropout: 0.2
 
 # LoRA configuration for efficient finetuning
 lora:

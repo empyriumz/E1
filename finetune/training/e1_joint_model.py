@@ -69,8 +69,8 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
         output_attentions: bool = False,
         **kwargs,
     ) -> E1JointOutput:
-        # Backbone forward once
-        hidden_states = self.get_encoder_output(
+        # Backbone forward once; use the pretrained MLM model so we can reuse logits if available
+        backbone_kwargs = dict(
             input_ids=input_ids,
             within_seq_position_ids=within_seq_position_ids,
             global_position_ids=global_position_ids,
@@ -78,6 +78,11 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
             output_hidden_states=output_hidden_states,
             output_attentions=output_attentions,
         )
+        if mlm_labels is not None:
+            backbone_kwargs["labels"] = mlm_labels
+
+        backbone_outputs = self._original_model(**backbone_kwargs)
+        hidden_states = backbone_outputs.last_hidden_state
 
         # Binding logits and loss
         logits_binding = self.classifier_heads[ion](hidden_states)
@@ -102,11 +107,17 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
         # MLM loss
         loss_mlm = None
         if mlm_labels is not None:
-            mlm_logits = self.mlm_head(hidden_states)
-            # mlm_labels already have pad_token_id for ignore positions
-            loss_mlm = self.ce_loss(
-                mlm_logits.view(-1, mlm_logits.size(-1)), mlm_labels.view(-1)
-            )
+            if hasattr(backbone_outputs, "loss") and backbone_outputs.loss is not None:
+                # Prefer loss computed by the pretrained MLM head
+                loss_mlm = backbone_outputs.loss
+            else:
+                mlm_logits = getattr(backbone_outputs, "logits", None)
+                if mlm_logits is None:
+                    mlm_logits = self.mlm_head(hidden_states)
+                # mlm_labels already have pad_token_id for ignore positions
+                loss_mlm = self.ce_loss(
+                    mlm_logits.view(-1, mlm_logits.size(-1)), mlm_labels.view(-1)
+                )
         else:
             loss_mlm = torch.tensor(0.0, device=input_ids.device)
 

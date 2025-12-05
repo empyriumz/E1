@@ -47,6 +47,7 @@ from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
 from training.e1_binding_trainer import E1BindingTrainer
 from training.e1_finetune_utils import load_e1_model
 from training.e1_joint_model import E1ForJointBindingMLM
+from modeling_e1 import compile_flex_attention_if_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,20 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
 
     # Get ion list
     ion_list = conf.training.ions
+
+    # Optionally compile flex_attention to avoid slow unfused path
+    compile_flex_attention = getattr(conf.training, "compile_flex_attention", False)
+    if compile_flex_attention:
+        if is_main_process():
+            logging.info(
+                "Enabling torch.compile for flex_attention to speed up training"
+            )
+        compile_success = compile_flex_attention_if_enabled(enabled=True)
+        if not compile_success and is_main_process():
+            logging.warning(
+                "flex_attention compilation was skipped or failed; "
+                "continuing with the unfused implementation"
+            )
 
     # Load model
     model, batch_preparer = load_e1_for_classification(
