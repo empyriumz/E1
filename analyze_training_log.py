@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-FastESM LoRA Training Log Analysis Script
+pLM LoRA Training Log Analysis Script
 
-This script extracts evaluation metrics from FastESM LoRA training logs
+This script extracts evaluation metrics from pLM LoRA training logs
 and creates comprehensive visualizations and summaries with a focus on
 Homologs-related metrics.
 
@@ -77,7 +77,7 @@ def create_comprehensive_plots(df, output_file):
     # Create figure with subplots
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
     fig.suptitle(
-        "FastESM LoRA Training Evaluation Metrics (Homologs Focus)",
+        "LoRA Training Evaluation Metrics (Homologs Focus)",
         fontsize=16,
         fontweight="bold",
     )
@@ -289,7 +289,7 @@ def print_training_summary(df, output_dir=None):
         df (pd.DataFrame): DataFrame with evaluation metrics
         output_dir (Path, optional): Path to output directory to read trainer_state.json
     """
-    print("\n=== FastESM LoRA Training Evaluation Summary (Homologs Focus) ===")
+    print("\n=== LoRA Training Evaluation Summary (Homologs Focus) ===")
     print(f"Total evaluations: {len(df)}")
     print(f'Epoch range: {df["epoch"].min():.2f} to {df["epoch"].max():.2f}')
     print()
@@ -386,7 +386,7 @@ def print_training_summary(df, output_dir=None):
 
 def main():
     """Main function to run the training log analysis."""
-    parser = argparse.ArgumentParser(description="Analyze FastESM LoRA training logs")
+    parser = argparse.ArgumentParser(description="Analyze pLM LoRA training logs")
     parser.add_argument(
         "--log-file",
         type=str,

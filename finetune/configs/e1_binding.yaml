@@ -9,31 +9,31 @@ data:
   # FASTA files with per-residue binding labels
   # Format: {fasta_path}/{ION}_train.fasta where {ION} is replaced with ion name
   # Each file has 3-line blocks: >id, sequence, binary_labels
-  fasta_path: "/host/protein-metal-ion-binding/multi_modal_binding/datasets/biolip2_latest"
+  fasta_path: "/hpcgpfs01/scratch/xdai/biolip2_latest"
   
   # MSA directory containing .a3m files per protein ID
   # Format: {msa_dir}/{ION}/{protein_id}.a3m
   # Set to null to disable MSA context (single sequence mode)
-  msa_dir: /host/E1/finetune/msa  # "/path/to/msa/{ION}/a3m_files"
+  msa_dir: /hpcgpfs01/scratch/xdai/msa  # "/path/to/msa/{ION}/a3m_files"
 
 training:
   # Ion types to train on (each gets its own classification head)
-  ions: ["LREE", "HREE", "REE"]
+  ions: ["CA", "ZN", "LREE", "HREE", "REE"]
   
   # Training epochs
   epochs: 30
   
   # Batch size (smaller due to E1's large context)
-  batch_size: 2
+  batch_size: 1
   
   # Gradient accumulation steps (effective batch = batch_size * accum_steps)
-  accum_steps: 4
+  accum_steps: 8
   
   # Learning rate
   learning_rate: 0.0001
   
   # Auxiliary MLM loss weight (0 disables MLM)
-  mlm_weight: 0.4
+  mlm_weight: 1.0
   mlm_probability: 0.15
 
   # Weight decay for AdamW
