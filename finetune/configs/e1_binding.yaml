@@ -1,0 +1,137 @@
+# Configuration for E1 LoRA finetuning on residue-level metal ion binding classification
+# This configuration performs direct task-aligned finetuning instead of MLM pretraining
+
+general:
+  seed: 1
+  gpu_id: 0  # Single GPU ID for training
+
+data:
+  # FASTA files with per-residue binding labels
+  # Format: {fasta_path}/{ION}_train.fasta where {ION} is replaced with ion name
+  # Each file has 3-line blocks: >id, sequence, binary_labels
+  fasta_path: "/host/protein-metal-ion-binding/multi_modal_binding/datasets/biolip2_latest"
+  
+  # MSA directory containing .a3m files per protein ID
+  # Format: {msa_dir}/{ION}/{protein_id}.a3m
+  # Set to null to disable MSA context (single sequence mode)
+  msa_dir: /host/E1/finetune/msa  # "/path/to/msa/{ION}/a3m_files"
+
+training:
+  # Ion types to train on (each gets its own classification head)
+  ions: ["LREE", "HREE", "REE"]
+  
+  # Training epochs
+  epochs: 30
+  
+  # Batch size (smaller due to E1's large context)
+  batch_size: 2
+  
+  # Gradient accumulation steps (effective batch = batch_size * accum_steps)
+  accum_steps: 4
+  
+  # Learning rate
+  learning_rate: 0.0001
+  
+  # Auxiliary MLM loss weight (0 disables MLM)
+  mlm_weight: 0.4
+  mlm_probability: 0.15
+
+  # Weight decay for AdamW
+  weight_decay: 0.01
+  
+  # Warmup epochs before full learning rate
+  warmup_epochs: 3
+  
+  # Minimum learning rate during cosine decay
+  min_lr: 1e-6
+  
+  # Cross-validation settings
+  num_folds: 5
+  
+  # Early stopping patience (in epochs)
+  early_stop_patience: 7
+  
+  # Positive class weight multiplier for BCE loss
+  # Higher values give more weight to positive (binding) samples
+  pos_ratio_multiplier: 2.0
+  
+  # Threshold optimization method: "youden", "f1", or "mcc"
+  threshold_method: "youden"
+  
+  # Whether to save model checkpoints
+  save_model: false
+  
+  # Mixed precision training
+  use_bf16: true
+  model_dtype: "bfloat16"
+  
+  # Data loading workers
+  num_workers: 16
+  
+  # Output directory
+  output_dir: "results/e1_binding"
+  
+  # DDP settings (for multi-GPU training via torchrun)
+  # Set to true because only one classification head is used per forward pass
+  ddp_find_unused_parameters: true
+  
+  # MSA sampling parameters
+  # These control how context sequences are sampled from MSA files
+  msa_sampling:
+    max_num_samples: 64  # Maximum context sequences to sample from MSA
+    max_token_length: 8192  # Maximum total tokens (context + query)
+    max_query_length: 1024  # Maximum query sequence tokens (O(n²) attention)
+    max_query_similarity: 0.95  # Max similarity of context to query
+    min_query_similarity: 0.0  # Min similarity of context to query
+    neighbor_similarity_lower_bound: 0.8  # Similarity threshold for weighting
+
+model:
+  # E1 model checkpoint
+  # Options: "Synthyra/Profluent-E1-600M", "Profluent-Bio/E1-600m"
+  checkpoint: "Synthyra/Profluent-E1-600M"
+  
+  # Dropout rate for classification heads
+  dropout: 0.1
+
+# LoRA configuration for efficient finetuning
+lora:
+  r: 16  # LoRA rank (lower = fewer parameters, higher = more capacity)
+  alpha: 32  # LoRA alpha (scaling factor, typically 2x rank)
+  lora_dropout: 0.1  # Dropout within LoRA layers
+  bias: "none"  # Whether to train bias: "none", "all", or "lora_only"
+  
+  # Target modules for LoRA
+  # E1 architecture modules that can be targeted:
+  # - Attention: q_proj, k_proj, v_proj, o_proj
+  # - MLP: w1, w2, w3
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "w1"
+    - "w2"
+    - "w3"
+
+---
+# Notes:
+# 
+# Data Requirements:
+# 1. FASTA files at {fasta_path}/{ION}_train.fasta with format:
+#    >protein_id
+#    PROTEIN_SEQUENCE
+#    0100110...  (binary labels, same length as sequence)
+#
+# 2. MSA files (optional) at {msa_dir}/{ION}/{protein_id}.a3m
+#    Generated using tools like MMseqs2 or HHblits
+#
+# Memory Usage:
+# - E1-600M requires ~8-12GB GPU memory with batch_size=2
+# - Reduce batch_size or max_token_length if OOM occurs
+# - Enable gradient_checkpointing in model config for large sequences
+#
+# Expected Performance:
+# - Should improve over baseline BCE with frozen embeddings
+# - LoRA provides efficient finetuning with ~0.1% trainable parameters
+# - MSA context typically improves performance on diverse protein families
+

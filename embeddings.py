@@ -106,13 +106,52 @@ def create_masked_sequence_variants(
     return variants
 
 
+def validate_device(device_str):
+    """
+    Validate the device specification and return a torch.device object.
+
+    Args:
+        device_str (str): Device specification ('cpu', 'cuda:N', or 'auto')
+
+    Returns:
+        torch.device: The validated device object
+
+    Raises:
+        ValueError: If the device specification is invalid or the requested GPU is not available
+    """
+    if device_str == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if device_str == "cpu":
+        return torch.device("cpu")
+
+    if device_str.startswith("cuda:"):
+        try:
+            gpu_id = int(device_str.split(":")[1])
+            if not torch.cuda.is_available():
+                raise ValueError("CUDA is not available on this system")
+            if gpu_id >= torch.cuda.device_count():
+                raise ValueError(
+                    f"GPU {gpu_id} not found. Available GPUs: 0 to {torch.cuda.device_count()-1}"
+                )
+            return torch.device(device_str)
+        except (IndexError, ValueError) as e:
+            raise ValueError(
+                f"Invalid CUDA device specification: {device_str}. Use 'cuda:N' where N is the GPU ID."
+            ) from e
+
+    raise ValueError(
+        f"Invalid device specification: {device_str}. Use 'cpu', 'cuda:N', or 'auto'"
+    )
+
+
 def extract_e1_embeddings(
     model,
     batch_preparer,
     sequences,
     output_dir,
     msa_dir,
-    device_str="auto",
+    device=None,
     num_variants=1,
     mask_prob_range=(0.05, 0.15),
 ):
@@ -127,7 +166,7 @@ def extract_e1_embeddings(
         sequences: List of (id, sequence) tuples
         output_dir: Directory to save the embeddings
         msa_dir: Directory containing MSA files (.a3m format)
-        device_str (str): Device specification ('cpu', 'cuda:N', or 'auto')
+        device (torch.device): The device to run inference on
         num_variants: Number of variants per sequence (1 = no augmentation, >1 = include masked variants)
         mask_prob_range: Tuple with (min, max) for masking probability.
                          If min equals max, a fixed probability is used.
@@ -141,17 +180,7 @@ def extract_e1_embeddings(
     # Create output directory if it doesn't exist
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    # Validate and get device
-    if device_str == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    elif device_str == "cpu":
-        device = torch.device("cpu")
-    elif device_str.startswith("cuda:"):
-        device = torch.device(device_str)
-    else:
-        raise ValueError(
-            f"Invalid device specification: {device_str}. Use 'cpu', 'cuda:N', or 'auto'"
-        )
+    # Use the provided device (already validated)
 
     # Track failures
     failed_ids = {}
@@ -599,14 +628,7 @@ def main():
     args = parser.parse_args()
 
     # Validate device
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    elif args.device == "cpu":
-        device = torch.device("cpu")
-    elif args.device.startswith("cuda:"):
-        device = torch.device(args.device)
-    else:
-        raise ValueError(f"Invalid device specification: {args.device}")
+    device = validate_device(args.device)
 
     # Load the model (either regular or finetuned)
     if args.adapter_checkpoint:
@@ -673,7 +695,7 @@ def main():
         sequences=sequences,
         output_dir=args.output_dir,
         msa_dir=msa_dir,
-        device_str=args.device,
+        device=device,
         num_variants=args.num_variants,
         mask_prob_range=tuple(args.mask_prob_range),
     )
