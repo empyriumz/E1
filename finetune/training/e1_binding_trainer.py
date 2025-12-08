@@ -643,22 +643,58 @@ class E1BindingTrainer:
         additional_state: Optional[Dict] = None,
     ):
         """
-        Save model checkpoint.
+        Save LoRA-only checkpoint (adapters + classifier heads, not full base model).
+
+        This saves ~99% less disk space than saving the full model state:
+        - LoRA adapters: ~2-3MB (saved via PEFT's save_pretrained)
+        - Classifier heads: ~100KB
+        - Total: ~3-5MB instead of ~1.2GB per fold
+
+        Directory structure:
+            {path}_lora/         # PEFT adapter directory
+                adapter_config.json
+                adapter_model.safetensors
+            {path}_heads.pt      # Classifier heads + metadata
 
         Args:
-            path: Path to save checkpoint
+            path: Base path for checkpoint (without extension)
             epoch: Current epoch
             optimizer: Optimizer to save state
             metrics: Metrics to include
             additional_state: Additional state to save
         """
-        # Get the unwrapped model state dict (handles DDP wrapping)
-        model_to_save = self._unwrapped_model
+        model = self._unwrapped_model
 
+        # Remove .pt extension if present for clean directory naming
+        base_path = str(path).replace(".pt", "")
+        lora_dir = f"{base_path}_lora"
+        heads_path = f"{base_path}_heads.pt"
+
+        # Save LoRA adapters using PEFT's save_pretrained
+        # This saves only the adapter weights + config, not the base model
+        if hasattr(model, "_original_model"):
+            peft_model = model._original_model
+            peft_model.save_pretrained(lora_dir)
+            if self.is_main_process:
+                self.logger.info(f"LoRA adapters saved to {lora_dir}")
+        else:
+            self.logger.warning(
+                "Model does not have _original_model attribute. "
+                "Falling back to full state dict save."
+            )
+            torch.save({"model_state_dict": model.state_dict()}, f"{base_path}_full.pt")
+            return
+
+        # Save classifier heads + metadata
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": model_to_save.state_dict(),
+            "base_model_checkpoint": getattr(self.conf.model, "checkpoint", None),
+            "lora_config": dict(self.conf.lora) if hasattr(self.conf, "lora") else None,
         }
+
+        if hasattr(model, "classifier_heads"):
+            checkpoint["classifier_heads"] = model.classifier_heads.state_dict()
+            checkpoint["ions"] = list(model.classifier_heads.keys())
 
         if optimizer is not None:
             checkpoint["optimizer_state_dict"] = optimizer.state_dict()
@@ -669,19 +705,37 @@ class E1BindingTrainer:
         if additional_state is not None:
             checkpoint.update(additional_state)
 
-        # Save classifier heads separately for easier loading
-        if hasattr(model_to_save, "classifier_heads"):
-            checkpoint["classifier_heads"] = model_to_save.classifier_heads.state_dict()
-
-        torch.save(checkpoint, path)
+        torch.save(checkpoint, heads_path)
         if self.is_main_process:
-            self.logger.info(f"Checkpoint saved to {path}")
+            self.logger.info(f"Classifier heads saved to {heads_path}")
 
     def load_checkpoint(self, path: str) -> Dict:
-        """Load model checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.logger.info(f"Loaded checkpoint from {path}")
+        """
+        Load LoRA-only checkpoint.
+
+        Note: This only loads the heads checkpoint metadata.
+        For full model reconstruction, use load_lora_checkpoint() from e1_checkpoint_utils.
+
+        Args:
+            path: Base path to checkpoint (without _heads.pt suffix)
+
+        Returns:
+            Checkpoint dictionary with epoch, metrics, etc.
+        """
+        base_path = str(path).replace(".pt", "").replace("_heads", "")
+        heads_path = f"{base_path}_heads.pt"
+
+        checkpoint = torch.load(heads_path, map_location=self.device)
+
+        # Load classifier heads if present
+        if "classifier_heads" in checkpoint and hasattr(
+            self._unwrapped_model, "classifier_heads"
+        ):
+            self._unwrapped_model.classifier_heads.load_state_dict(
+                checkpoint["classifier_heads"]
+            )
+
+        self.logger.info(f"Loaded checkpoint from {heads_path}")
         return checkpoint
 
     def reset_metrics_tracker(self):

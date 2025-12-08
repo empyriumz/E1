@@ -59,7 +59,7 @@ training:
   threshold_method: "youden"
   
   # Whether to save model checkpoints
-  save_model: false
+  save_model: true
   
   # Mixed precision training
   use_bf16: true
@@ -71,7 +71,7 @@ training:
   num_workers: 2
   
   # Output directory
-  output_dir: "/hpcgpfs01/scratch/xdai/e1_binding"
+  output_dir: results/e1_binding
   
   # DDP settings (for multi-GPU training via torchrun)
   # Set to true because only one classification head is used per forward pass
@@ -111,6 +111,7 @@ lora:
   alpha: 32  # LoRA alpha (scaling factor, typically 2x rank)
   lora_dropout: 0.2  # Dropout within LoRA layers
   bias: "none"  # Whether to train bias: "none", "all", or "lora_only"
+  train_mlm_head: false  # Whether to make MLM head trainable (false = stronger regularization)
   
   # Target modules for LoRA
   # E1 architecture modules that can be targeted:

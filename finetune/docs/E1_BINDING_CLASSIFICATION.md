@@ -216,7 +216,10 @@ If the hidden state difference is 0, check:
 ```
 results/e1_binding/
 ├── fold_1/
-│   ├── best_e1_binding_model.pt
+│   ├── best_e1_binding_model_lora/   # PEFT LoRA adapters (~2-3MB)
+│   │   ├── adapter_config.json
+│   │   └── adapter_model.safetensors
+│   ├── best_e1_binding_model_heads.pt  # Classifier heads + metadata (~100KB)
 │   └── plots/
 │       ├── loss_fold_1_CA.png
 │       └── auprc_fold_1_CA.png
@@ -227,17 +230,42 @@ results/e1_binding/
 
 ### Checkpoint Contents
 
+The checkpoint is split into two parts for storage efficiency:
+
+**LoRA Adapter Directory** (`*_lora/`):
+- `adapter_config.json`: LoRA configuration
+- `adapter_model.safetensors`: LoRA weights (~2-3MB)
+
+**Heads Checkpoint** (`*_heads.pt`):
 ```python
 {
     "epoch": 15,
-    "model_state_dict": {...},  # Full model state
-    "optimizer_state_dict": {...},
-    "metrics": {"auprc": 0.85},
+    "base_model_checkpoint": "Synthyra/Profluent-E1-600M",
+    "lora_config": {"r": 16, "alpha": 32, ...},
+    "classifier_heads": {...},  # Ion-specific head weights
     "ions": ["CA", "ZN", "MG"],
-    "best_thresholds": {"CA": {"f1": 0.45, "mcc": 0.45}, ...},
+    "metrics": {"auprc": 0.85, "hra": 0.82},
     "fold": 1,
-    "classifier_heads": {...}  # Just the heads for easy loading
 }
+```
+
+### Loading Checkpoints for Inference
+
+```python
+from training.e1_checkpoint_utils import load_lora_checkpoint, load_ensemble_models
+
+# Load single fold
+model = load_lora_checkpoint(
+    "results/e1_binding/fold_1/best_e1_binding_model",
+    device=torch.device("cuda"),
+)
+
+# Load all 5 folds for ensemble inference
+models = load_ensemble_models(
+    "results/e1_binding/",
+    num_folds=5,
+    device=torch.device("cuda"),
+)
 ```
 
 ## API Reference
@@ -300,4 +328,5 @@ class E1BindingTrainer:
 - **v1.2**: Added REE ion support (LREE + HREE combined)
 - **v1.3**: Fixed NCCL timeout by synchronizing early stopping across ranks
 - **v1.4**: Fixed data leakage by ensuring LREE, HREE, and REE use shared train/val splits
+- **v1.5**: LoRA-only checkpointing (~99% storage reduction); configurable `train_mlm_head` option
 

@@ -7,7 +7,7 @@ applies the same masking strategy used by E1DataCollatorForMLM to produce
 are eligible for masking.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import torch
 from modeling_e1 import E1BatchPreparer
 from training.e1_binding_collator import E1DataCollatorForResidueClassification

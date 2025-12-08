@@ -113,12 +113,17 @@ def load_e1_model(
             "w3",
         ]
 
+    # Check if MLM head should be trainable (default: False for regularization)
+    train_mlm_head = lora_config.get("train_mlm_head", False)
+    modules_to_save = ["mlm_head"] if train_mlm_head else None
+
     peft_config = LoraConfig(
         r=lora_config.get("r", 16),
         lora_alpha=lora_config.get("alpha", 32),
         bias=lora_config.get("bias", "none"),
         target_modules=default_target_modules,
         lora_dropout=lora_config.get("lora_dropout", 0.05),
+        modules_to_save=modules_to_save,
     )
 
     # Log LoRA configuration
@@ -128,6 +133,9 @@ def load_e1_model(
     logger.info(f"  - dropout: {peft_config.lora_dropout}")
     logger.info(f"  - target_modules: {peft_config.target_modules}")
     logger.info(f"  - bias: {peft_config.bias}")
+    logger.info(f"  - train_mlm_head: {train_mlm_head}")
+    if modules_to_save:
+        logger.info(f"  - modules_to_save: {modules_to_save}")
 
     # Apply PEFT LoRA
     model = get_peft_model(model, peft_config)
