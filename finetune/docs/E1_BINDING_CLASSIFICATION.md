@@ -182,7 +182,7 @@ If the hidden state difference is 0, check:
 
 3) **OOM errors:** Reduce `batch_size` or `max_token_length`, increase `accum_steps`, or enable gradient checkpointing.
 
-4) **DDP hanging:** Keep `ddp_find_unused_parameters: true` since only one ion head is active per forward.
+4) **DDP hanging:** Keep `ddp_find_unused_parameters: true` since only one ion head is active per forward. Early stopping is now synchronized across ranks automatically.
 
 ## Performance Considerations
 
@@ -288,4 +288,5 @@ class E1BindingTrainer:
 - **v1.0**: Initial implementation with LoRA and K-fold CV
 - **v1.1**: Added DDP support for multi-GPU training
 - **v1.2**: Added REE ion support (LREE + HREE combined)
+- **v1.3**: Fixed NCCL timeout by synchronizing early stopping across ranks
 

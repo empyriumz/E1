@@ -504,15 +504,27 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         # Learning rate scheduling
         scheduler.step()
 
-        # Early stopping on HRA
-        if early_stopper.early_stop(avg_val_hra):
+        # Synchronize validation metrics before early stopping decision
+        # All ranks must use the same avg_val_hra to make the same stop decision
+        if is_distributed():
+            # Broadcast avg_val_hra from rank 0 so all ranks use the same value
+            hra_tensor = torch.tensor([avg_val_hra], device=device)
+            dist.broadcast(hra_tensor, src=0)
+            avg_val_hra = hra_tensor.item()
+
+        # Early stopping on HRA (now synchronized across ranks)
+        should_stop = early_stopper.early_stop(avg_val_hra)
+
+        # Broadcast stop decision to ensure all ranks agree
+        if is_distributed():
+            stop_tensor = torch.tensor([1 if should_stop else 0], device=device)
+            dist.broadcast(stop_tensor, src=0)
+            should_stop = stop_tensor.item() == 1
+
+        if should_stop:
             if is_main_process():
                 logging.info(f"Early stopping at epoch {epoch}")
             break
-
-        # Synchronize across processes (barrier) before next epoch
-        if is_distributed():
-            dist.barrier()
 
     # Generate training curves (only on main process)
     if is_main_process():
