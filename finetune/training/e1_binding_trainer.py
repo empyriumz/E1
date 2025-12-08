@@ -256,7 +256,9 @@ class E1BindingTrainer:
         self,
         train_dataset,
         val_dataset,
-        collate_fn,
+        collate_fn=None,
+        train_collate_fn=None,
+        val_collate_fn=None,
         batch_size: Optional[int] = None,
         num_workers: int = 4,
     ) -> Tuple[DataLoader, DataLoader, Optional[DistributedSampler]]:
@@ -266,7 +268,9 @@ class E1BindingTrainer:
         Args:
             train_dataset: Training dataset
             val_dataset: Validation dataset
-            collate_fn: Collate function (E1DataCollatorForResidueClassification)
+            collate_fn: Collate function for both loaders (deprecated, use train_collate_fn/val_collate_fn)
+            train_collate_fn: Collate function for training loader
+            val_collate_fn: Collate function for validation loader
             batch_size: Batch size (defaults to config)
             num_workers: Number of data loading workers
 
@@ -275,6 +279,12 @@ class E1BindingTrainer:
             train_sampler is returned for setting epoch in distributed training
         """
         batch_size = batch_size or self.conf.training.batch_size
+
+        # Handle backward compatibility: if single collate_fn provided, use for both
+        if train_collate_fn is None:
+            train_collate_fn = collate_fn
+        if val_collate_fn is None:
+            val_collate_fn = collate_fn
 
         # Create samplers for distributed training
         train_sampler = None
@@ -301,7 +311,7 @@ class E1BindingTrainer:
             batch_size=batch_size,
             shuffle=(train_sampler is None),  # Don't shuffle if using sampler
             sampler=train_sampler,
-            collate_fn=collate_fn,
+            collate_fn=train_collate_fn,
             num_workers=num_workers,
             pin_memory=True,
             drop_last=False,
@@ -312,7 +322,7 @@ class E1BindingTrainer:
             batch_size=batch_size,
             shuffle=False,
             sampler=val_sampler,
-            collate_fn=collate_fn,
+            collate_fn=val_collate_fn,
             num_workers=num_workers,
             pin_memory=True,
             drop_last=False,

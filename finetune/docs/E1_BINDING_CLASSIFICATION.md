@@ -147,6 +147,16 @@ MSA files in A3M format provide homolog sequences for context. During training:
 - Sampling varies per epoch (data augmentation)
 - Max context is controlled by `max_token_length` and `max_num_samples`
 
+### REE Dataset Construction
+
+The REE (Rare Earth Elements) ion type combines data from LREE and HREE:
+- **Union of protein IDs**: REE contains all proteins from both LREE and HREE
+- **Label combination**: For proteins in both datasets, labels are combined with logical OR
+- **Shared train/val splits**: To prevent data leakage, LREE, HREE, and REE use the same K-fold partition
+
+> [!IMPORTANT]
+> The pipeline ensures that if a protein is in the validation fold for REE, it is also in the validation fold for LREE and HREE. This prevents a protein from being used for training in LREE/HREE while being held out for REE validation.
+
 ## Testing
 
 Run the test suite to verify the pipeline:
@@ -289,4 +299,5 @@ class E1BindingTrainer:
 - **v1.1**: Added DDP support for multi-GPU training
 - **v1.2**: Added REE ion support (LREE + HREE combined)
 - **v1.3**: Fixed NCCL timeout by synchronizing early stopping across ranks
+- **v1.4**: Fixed data leakage by ensuring LREE, HREE, and REE use shared train/val splits
 

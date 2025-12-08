@@ -41,7 +41,10 @@ from training.finetune_utils import (
     process_config,
 )
 from training.e1_classification_model import E1ForResidueClassification
-from training.e1_binding_dataset import create_binding_datasets_from_config
+from training.e1_binding_dataset import (
+    create_binding_datasets_from_config,
+    compute_shared_ree_splits,
+)
 from training.e1_binding_collator import E1DataCollatorForResidueClassification
 from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
 from training.e1_binding_trainer import E1BindingTrainer
@@ -278,20 +281,32 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         if is_distributed():
             logging.info(f"  - World size: {get_world_size()}")
 
-    # Create data collator
+    # Create data collators (separate for train and val with different MSA params)
     msa_config = conf.training.get("msa_sampling", {})
+    val_msa_config = conf.training.get("validation_msa_sampling", msa_config)
+
     mlm_weight = getattr(conf.training, "mlm_weight", 0.0)
     if mlm_weight and mlm_weight > 0:
-        data_collator = E1DataCollatorForJointBindingMLM(
+        train_collator = E1DataCollatorForJointBindingMLM(
             mlm_probability=getattr(conf.training, "mlm_probability", 0.15),
             max_total_tokens=msa_config.get("max_token_length", 8192),
             max_query_tokens=msa_config.get("max_query_length", 1024),
             ignore_index=-100,
         )
+        val_collator = E1DataCollatorForJointBindingMLM(
+            mlm_probability=getattr(conf.training, "mlm_probability", 0.15),
+            max_total_tokens=val_msa_config.get("max_token_length", 12288),
+            max_query_tokens=val_msa_config.get("max_query_length", 2048),
+            ignore_index=-100,
+        )
     else:
-        data_collator = E1DataCollatorForResidueClassification(
+        train_collator = E1DataCollatorForResidueClassification(
             max_total_tokens=msa_config.get("max_token_length", 8192),
             max_query_tokens=msa_config.get("max_query_length", 1024),
+        )
+        val_collator = E1DataCollatorForResidueClassification(
+            max_total_tokens=val_msa_config.get("max_token_length", 12288),
+            max_query_tokens=val_msa_config.get("max_query_length", 2048),
         )
 
     # Prepare datasets for each ion
@@ -305,14 +320,52 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     # Store val metrics per ion for each epoch to copy when we find a new best
     val_metrics_per_ion = {}
 
-    for ion in ion_list:
-        train_dataset, val_dataset, pos_weight = create_binding_datasets_from_config(
+    # Check if we have any REE-related ions (LREE, HREE, REE)
+    # These need to share the same train/val split to prevent data leakage
+    ree_related_ions = {"LREE", "HREE", "REE"}
+    has_ree_related = bool(ree_related_ions & set(ion_list))
+    shared_train_ids = None
+    shared_val_ids = None
+
+    if has_ree_related:
+        # Compute shared train/val split for REE-related ions
+        # This ensures no data leakage between LREE, HREE, and REE
+        shared_train_ids, shared_val_ids = compute_shared_ree_splits(
             data_conf=dict(conf.data),
             training_conf=dict(conf.training),
-            ion_type=ion,
             fold_to_use_as_val=fold_idx,
             seed=seed,
         )
+        if is_main_process():
+            logging.info(
+                f"  Using shared splits for REE-related ions: "
+                f"train={len(shared_train_ids)}, val={len(shared_val_ids)}"
+            )
+
+    for ion in ion_list:
+        # Use shared splits for REE-related ions, otherwise let each ion compute its own
+        if ion in ree_related_ions:
+            train_dataset, val_dataset, pos_weight = (
+                create_binding_datasets_from_config(
+                    data_conf=dict(conf.data),
+                    training_conf=dict(conf.training),
+                    ion_type=ion,
+                    fold_to_use_as_val=fold_idx,
+                    seed=seed,
+                    train_ids=shared_train_ids,
+                    val_ids=shared_val_ids,
+                )
+            )
+        else:
+            train_dataset, val_dataset, pos_weight = (
+                create_binding_datasets_from_config(
+                    data_conf=dict(conf.data),
+                    training_conf=dict(conf.training),
+                    ion_type=ion,
+                    fold_to_use_as_val=fold_idx,
+                    seed=seed,
+                )
+            )
         datasets[ion] = (train_dataset, val_dataset)
         pos_weights[ion] = pos_weight
 
@@ -344,7 +397,8 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         train_loader, val_loader, train_sampler = trainer.create_dataloaders(
             train_dataset,
             val_dataset,
-            collate_fn=data_collator,
+            train_collate_fn=train_collator,
+            val_collate_fn=val_collator,
             batch_size=batch_size,
             num_workers=num_workers,
         )

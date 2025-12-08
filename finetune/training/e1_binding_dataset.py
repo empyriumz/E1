@@ -606,6 +606,62 @@ def get_train_val_split(
     raise ValueError(f"Invalid fold_to_use_as_val: {fold_to_use_as_val}")
 
 
+def compute_shared_ree_splits(
+    data_conf: Dict[str, Any],
+    training_conf: Dict[str, Any],
+    fold_to_use_as_val: int = 1,
+    seed: int = 42,
+) -> Tuple[List[str], List[str]]:
+    """
+    Compute shared train/val splits for REE-related ions (LREE, HREE, REE).
+
+    This function ensures that all three datasets use the same train/val split
+    based on the union of all protein IDs from LREE and HREE, preventing data
+    leakage where a protein could be in REE validation but LREE/HREE training.
+
+    Args:
+        data_conf: Data configuration dictionary
+        training_conf: Training configuration dictionary
+        fold_to_use_as_val: Which fold to use for validation
+        seed: Random seed
+
+    Returns:
+        Tuple of (train_ids, val_ids) based on the union of LREE and HREE proteins
+    """
+    fasta_path = data_conf.get("fasta_path", "")
+
+    # Build FASTA paths for LREE and HREE
+    if "{ION}" in fasta_path:
+        lree_fasta_path = fasta_path.replace("{ION}", "LREE")
+        hree_fasta_path = fasta_path.replace("{ION}", "HREE")
+    else:
+        lree_fasta_path = f"{fasta_path}/LREE_train.fasta"
+        hree_fasta_path = f"{fasta_path}/HREE_train.fasta"
+
+    # Load all protein IDs from both datasets
+    lree_ids, _, _ = process_binding_fasta_file(lree_fasta_path)
+    hree_ids, _, _ = process_binding_fasta_file(hree_fasta_path)
+
+    # Compute union of all protein IDs
+    all_ids = sorted(list(set(lree_ids) | set(hree_ids)))
+
+    logger.info(
+        f"Computing shared REE splits: LREE={len(lree_ids)}, HREE={len(hree_ids)}, "
+        f"Union={len(all_ids)}"
+    )
+
+    # Apply K-fold split to the union
+    num_folds = training_conf.get("num_folds", 5)
+    train_ids, val_ids = get_train_val_split(
+        all_ids,
+        fold_to_use_as_val=fold_to_use_as_val,
+        num_folds=num_folds,
+        random_seed=seed,
+    )
+
+    return train_ids, val_ids
+
+
 def create_binding_datasets_from_config(
     data_conf: Dict[str, Any],
     training_conf: Dict[str, Any],
@@ -674,7 +730,7 @@ def create_binding_datasets_from_config(
         # Since E1BindingDatasetREE doesn't support id_list filtering directly,
         # we'll create filtered versions by creating new datasets with only the relevant IDs
 
-        # Get MSA sampling config
+        # Get MSA sampling config for TRAINING
         msa_config = training_conf.get("msa_sampling", {})
         max_num_samples = msa_config.get("max_num_samples", 64)
         max_token_length = msa_config.get("max_token_length", 8192)
@@ -682,6 +738,20 @@ def create_binding_datasets_from_config(
         min_query_similarity = msa_config.get("min_query_similarity", 0.0)
         neighbor_similarity_lower_bound = msa_config.get(
             "neighbor_similarity_lower_bound", 0.8
+        )
+
+        # Get MSA sampling config for VALIDATION (fall back to training config if not specified)
+        val_msa_config = training_conf.get("validation_msa_sampling", msa_config)
+        val_max_num_samples = val_msa_config.get("max_num_samples", max_num_samples)
+        val_max_token_length = val_msa_config.get("max_token_length", max_token_length)
+        val_max_query_similarity = val_msa_config.get(
+            "max_query_similarity", max_query_similarity
+        )
+        val_min_query_similarity = val_msa_config.get(
+            "min_query_similarity", min_query_similarity
+        )
+        val_neighbor_similarity_lower_bound = val_msa_config.get(
+            "neighbor_similarity_lower_bound", neighbor_similarity_lower_bound
         )
 
         # Create filtered LREE and HREE datasets for train
@@ -705,7 +775,7 @@ def create_binding_datasets_from_config(
             lree_msa_dir = None
             hree_msa_dir = None
 
-        # Create train datasets with filtered IDs
+        # Create train datasets with training MSA config
         lree_train = E1BindingDataset(
             fasta_path=lree_fasta_path,
             msa_dir=lree_msa_dir,
@@ -734,17 +804,17 @@ def create_binding_datasets_from_config(
             is_validation=False,
         )
 
-        # Create val datasets with filtered IDs
+        # Create val datasets with validation MSA config
         lree_val = E1BindingDataset(
             fasta_path=lree_fasta_path,
             msa_dir=lree_msa_dir,
             ion_type="LREE",
             id_list=val_ids,
-            max_num_samples=max_num_samples,
-            max_token_length=max_token_length,
-            max_query_similarity=max_query_similarity,
-            min_query_similarity=min_query_similarity,
-            neighbor_similarity_lower_bound=neighbor_similarity_lower_bound,
+            max_num_samples=val_max_num_samples,
+            max_token_length=val_max_token_length,
+            max_query_similarity=val_max_query_similarity,
+            min_query_similarity=val_min_query_similarity,
+            neighbor_similarity_lower_bound=val_neighbor_similarity_lower_bound,
             seed=seed,
             is_validation=True,
         )
@@ -754,11 +824,11 @@ def create_binding_datasets_from_config(
             msa_dir=hree_msa_dir,
             ion_type="HREE",
             id_list=val_ids,
-            max_num_samples=max_num_samples,
-            max_token_length=max_token_length,
-            max_query_similarity=max_query_similarity,
-            min_query_similarity=min_query_similarity,
-            neighbor_similarity_lower_bound=neighbor_similarity_lower_bound,
+            max_num_samples=val_max_num_samples,
+            max_token_length=val_max_token_length,
+            max_query_similarity=val_max_query_similarity,
+            min_query_similarity=val_min_query_similarity,
+            neighbor_similarity_lower_bound=val_neighbor_similarity_lower_bound,
             seed=seed,
             is_validation=True,
         )
@@ -777,7 +847,7 @@ def create_binding_datasets_from_config(
     fasta_path = data_conf.get("fasta_path", "")
     msa_dir = data_conf.get("msa_dir", None)
 
-    # Get MSA sampling config
+    # Get MSA sampling config for TRAINING
     msa_config = training_conf.get("msa_sampling", {})
     max_num_samples = msa_config.get("max_num_samples", 64)
     max_token_length = msa_config.get("max_token_length", 8192)
@@ -785,6 +855,20 @@ def create_binding_datasets_from_config(
     min_query_similarity = msa_config.get("min_query_similarity", 0.0)
     neighbor_similarity_lower_bound = msa_config.get(
         "neighbor_similarity_lower_bound", 0.8
+    )
+
+    # Get MSA sampling config for VALIDATION (fall back to training config if not specified)
+    val_msa_config = training_conf.get("validation_msa_sampling", msa_config)
+    val_max_num_samples = val_msa_config.get("max_num_samples", max_num_samples)
+    val_max_token_length = val_msa_config.get("max_token_length", max_token_length)
+    val_max_query_similarity = val_msa_config.get(
+        "max_query_similarity", max_query_similarity
+    )
+    val_min_query_similarity = val_msa_config.get(
+        "min_query_similarity", min_query_similarity
+    )
+    val_neighbor_similarity_lower_bound = val_msa_config.get(
+        "neighbor_similarity_lower_bound", neighbor_similarity_lower_bound
     )
 
     # Build FASTA path
@@ -812,7 +896,7 @@ def create_binding_datasets_from_config(
             random_seed=seed,
         )
 
-    # Create datasets
+    # Create training dataset with training MSA config
     train_dataset = E1BindingDataset(
         fasta_path=ion_fasta_path,
         msa_dir=ion_msa_dir,
@@ -827,19 +911,30 @@ def create_binding_datasets_from_config(
         is_validation=False,
     )
 
+    # Create validation dataset with validation MSA config
     val_dataset = E1BindingDataset(
         fasta_path=ion_fasta_path,
         msa_dir=ion_msa_dir,
         ion_type=ion_type,
         id_list=val_ids,
-        max_num_samples=max_num_samples,
-        max_token_length=max_token_length,
-        max_query_similarity=max_query_similarity,
-        min_query_similarity=min_query_similarity,
-        neighbor_similarity_lower_bound=neighbor_similarity_lower_bound,
+        max_num_samples=val_max_num_samples,
+        max_token_length=val_max_token_length,
+        max_query_similarity=val_max_query_similarity,
+        min_query_similarity=val_min_query_similarity,
+        neighbor_similarity_lower_bound=val_neighbor_similarity_lower_bound,
         seed=seed,
         is_validation=True,  # Fixed seed for validation
     )
+
+    # Log MSA config differences if they exist
+    if val_msa_config != msa_config:
+        logger.info(f"Using separate MSA sampling configs for train/val:")
+        logger.info(
+            f"  Train: max_num_samples={max_num_samples}, max_token_length={max_token_length}"
+        )
+        logger.info(
+            f"  Val:   max_num_samples={val_max_num_samples}, max_token_length={val_max_token_length}"
+        )
 
     # Calculate pos_weight from training set
     pos_weight_multiplier = training_conf.get("pos_ratio_multiplier", 1.0)
