@@ -8,6 +8,7 @@ This module provides E1BindingTrainer which handles:
 - Distributed Data Parallel (DDP) support for multi-GPU training
 """
 
+import copy
 import torch
 import torch.nn as nn
 import numpy as np
@@ -17,46 +18,14 @@ from torch.utils.data.distributed import DistributedSampler
 from torchmetrics.classification import (
     BinaryAUROC,
     BinaryAveragePrecision,
-    BinaryF1Score,
-    BinaryMatthewsCorrCoef,
-    BinaryRecall,
-    BinaryPrecision,
-    BinaryConfusionMatrix,
-    BinaryROC,
 )
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
 import logging
-from .metrics import high_recall_auprc
+from .metrics import high_recall_auprc, find_optimal_threshold, MetricsTracker
+from .visualization import plot_training_curves as viz_plot_training_curves
 
 logger = logging.getLogger(__name__)
-
-
-class MetricsTracker:
-    """Tracks training and validation metrics per ion for plotting."""
-
-    def __init__(self):
-        self.train_history: Dict[str, List[Dict]] = {}
-        self.val_history: Dict[str, List[Dict]] = {}
-
-    def update_train(self, metrics: Dict, ion: str):
-        if ion not in self.train_history:
-            self.train_history[ion] = []
-        self.train_history[ion].append(metrics.copy())
-
-    def update_val(self, metrics: Dict, ion: str):
-        if ion not in self.val_history:
-            self.val_history[ion] = []
-        self.val_history[ion].append(metrics.copy())
-
-    def get_all_ions(self) -> List[str]:
-        return list(set(self.train_history.keys()) | set(self.val_history.keys()))
-
-    def get_ion_metrics(self, ion: str) -> Dict:
-        return {
-            "train_metrics": self.train_history.get(ion, []),
-            "val_metrics": self.val_history.get(ion, []),
-        }
 
 
 class EarlyStopper:
@@ -92,81 +61,6 @@ class EarlyStopper:
             self.counter += 1
 
         return self.counter >= self.patience
-
-
-def find_optimal_threshold(
-    predictions: torch.Tensor,
-    labels: torch.Tensor,
-    method: str = "youden",
-) -> Dict[str, Any]:
-    """
-    Find optimal classification threshold.
-
-    Args:
-        predictions: Model predictions (probabilities)
-        labels: Ground truth labels
-        method: 'youden', 'f1', or 'mcc'
-
-    Returns:
-        Dictionary with threshold and metrics
-    """
-    if predictions.ndim > 1:
-        predictions = predictions.flatten()
-
-    if not isinstance(predictions, torch.Tensor):
-        predictions = torch.tensor(predictions)
-    if not isinstance(labels, torch.Tensor):
-        labels = torch.tensor(labels)
-
-    # Convert to float32 for metric computation
-    predictions = predictions.float()
-    labels = labels.long()
-
-    if method == "youden":
-        roc = BinaryROC(thresholds=None)
-        fpr, tpr, thresholds = roc(predictions, labels)
-        fpr = fpr.numpy()
-        tpr = tpr.numpy()
-        thresholds = thresholds.float().numpy()
-        optimal_idx = np.argmax(tpr - fpr)
-        optimal_threshold = float(thresholds[optimal_idx])
-
-    elif method == "f1":
-        thresholds = np.linspace(0.01, 0.99, 100)
-        f1_scores = []
-        for t in thresholds:
-            f1_metric = BinaryF1Score(threshold=t)
-            f1_scores.append(f1_metric(predictions, labels).item())
-        optimal_idx = np.argmax(f1_scores)
-        optimal_threshold = float(thresholds[optimal_idx])
-
-    elif method == "mcc":
-        thresholds = np.linspace(0.01, 0.99, 100)
-        mcc_scores = []
-        for t in thresholds:
-            mcc_metric = BinaryMatthewsCorrCoef(threshold=t)
-            mcc_scores.append(mcc_metric(predictions, labels).item())
-        optimal_idx = np.argmax(mcc_scores)
-        optimal_threshold = float(thresholds[optimal_idx])
-
-    else:
-        optimal_threshold = 0.5
-
-    # Calculate metrics at optimal threshold
-    f1_metric = BinaryF1Score(threshold=optimal_threshold)
-    mcc_metric = BinaryMatthewsCorrCoef(threshold=optimal_threshold)
-    recall_metric = BinaryRecall(threshold=optimal_threshold)
-    precision_metric = BinaryPrecision(threshold=optimal_threshold)
-    cm_metric = BinaryConfusionMatrix(threshold=optimal_threshold)
-
-    return {
-        "threshold": optimal_threshold,
-        "f1": f1_metric(predictions, labels).item(),
-        "mcc": mcc_metric(predictions, labels).item(),
-        "recall": recall_metric(predictions, labels).item(),
-        "precision": precision_metric(predictions, labels).item(),
-        "confusion_matrix": cm_metric(predictions, labels).numpy(),
-    }
 
 
 class E1BindingTrainer:
@@ -237,7 +131,8 @@ class E1BindingTrainer:
         self.metrics_tracker = MetricsTracker()
 
         # OOF predictions storage
-        self.oof_predictions = {"predictions": {}, "labels": {}}
+        self.current_val_oof: Dict[str, Dict[str, Any]] = {}
+        self.best_oof_predictions: Dict[str, Dict[str, Any]] = {}
 
         # Gradient accumulation
         self.accum_steps = getattr(conf.training, "accum_steps", 1)
@@ -477,6 +372,9 @@ class E1BindingTrainer:
         all_labels = []
         num_batches = 0
 
+        # For OOF capture on the main process only
+        collecting_oof = self.is_main_process and fold_idx is not None
+
         for batch in val_loader:
             batch = self._move_batch_to_device(batch)
 
@@ -498,7 +396,7 @@ class E1BindingTrainer:
                     ion=ion,
                     labels=batch["binding_labels"],
                     label_mask=batch["label_mask"],
-                    mlm_labels=batch["mlm_labels"],
+                    mlm_labels=batch.get("mlm_labels"),
                     pos_weight=pos_weight,
                 )
 
@@ -515,16 +413,26 @@ class E1BindingTrainer:
                 probs = torch.sigmoid(logits)
                 mask = batch["label_mask"]
 
-                valid_probs = probs[mask].cpu()
-                valid_labels = batch["binding_labels"][mask].cpu()
+                valid_probs = probs[mask].detach().cpu()
+                valid_labels = batch["binding_labels"][mask].detach().cpu()
 
                 all_probs.append(valid_probs)
                 all_labels.append(valid_labels)
 
+                if collecting_oof:
+                    self._accumulate_oof_from_batch(
+                        ion=ion,
+                        probs=probs,
+                        labels=batch["binding_labels"],
+                        label_mask=mask,
+                        protein_ids=batch.get("protein_ids"),
+                        fold_idx=fold_idx,
+                    )
+
         # Compute metrics (convert to float32 for torchmetrics)
         all_probs = torch.cat(all_probs).float()
         # Round floating point labels (from smoothing) back to integers for metrics
-        all_labels = (torch.cat(all_labels) > 0.5).long()
+        all_labels = torch.cat(all_labels).long()
 
         val_auc = self.metric_auc(all_probs, all_labels).item()
         val_auprc = self.metric_auprc(all_probs, all_labels).item()
@@ -535,12 +443,6 @@ class E1BindingTrainer:
         threshold_results = find_optimal_threshold(
             all_probs, all_labels, method=threshold_method
         )
-
-        # Store OOF predictions
-        if fold_idx is not None:
-            self.store_oof_predictions(
-                fold_idx, all_probs.numpy(), all_labels.numpy(), ion
-            )
 
         val_metrics = {
             "loss": total_loss / max(num_batches, 1),
@@ -562,20 +464,80 @@ class E1BindingTrainer:
 
         return val_metrics
 
-    def store_oof_predictions(
+    def _accumulate_oof_from_batch(
         self,
+        ion: str,
+        probs: torch.Tensor,
+        labels: torch.Tensor,
+        label_mask: torch.Tensor,
+        protein_ids: Optional[Any],
         fold_idx: int,
-        predictions: np.ndarray,
-        labels: np.ndarray,
-        identifier: str,
     ):
-        """Store out-of-fold predictions."""
-        if fold_idx not in self.oof_predictions["predictions"]:
-            self.oof_predictions["predictions"][fold_idx] = {}
-            self.oof_predictions["labels"][fold_idx] = {}
+        """Collect per-residue OOF records for the current validation epoch."""
+        # Ensure we have identifiers for each sample in batch
+        batch_size = probs.shape[0]
+        if protein_ids is None or len(protein_ids) != batch_size:
+            protein_ids = [f"sample_{i}" for i in range(batch_size)]
 
-        self.oof_predictions["predictions"][fold_idx][identifier] = predictions
-        self.oof_predictions["labels"][fold_idx][identifier] = labels
+        entry = self.current_val_oof.setdefault(
+            ion, {"ids": [], "labels": [], "probs": [], "fold": fold_idx}
+        )
+
+        for sample_idx, protein_id in enumerate(protein_ids):
+            sample_mask = label_mask[sample_idx].detach().cpu()
+            if not torch.any(sample_mask):
+                continue
+
+            sample_probs = (
+                probs[sample_idx][sample_mask]
+                .detach()
+                .float()  # ensure numpy-friendly dtype
+                .cpu()
+                .numpy()
+                .ravel()
+                .tolist()
+            )
+            sample_labels = (
+                labels[sample_idx][sample_mask]
+                .detach()
+                .float()
+                .cpu()
+                .numpy()
+                .ravel()
+                .tolist()
+            )
+
+            # Positions are in the same order as the valid residues
+            residue_ids = [f"{protein_id}:{pos}" for pos in range(len(sample_labels))]
+
+            entry["ids"].extend(residue_ids)
+            entry["labels"].extend(sample_labels)
+            entry["probs"].extend(sample_probs)
+            entry["fold"] = fold_idx
+
+    def reset_oof_tracking(self):
+        """Reset all OOF tracking structures (used per fold)."""
+        self.current_val_oof = {}
+        self.best_oof_predictions = {}
+
+    def reset_current_oof(self):
+        """Reset OOF buffers for the current epoch."""
+        self.current_val_oof = {}
+
+    def snapshot_current_oof_as_best(self):
+        """Persist the current epoch's OOF buffers as the fold-best snapshot."""
+        self.best_oof_predictions = {}
+        for ion, data in self.current_val_oof.items():
+            self.best_oof_predictions[ion] = {
+                "ids": np.array(data.get("ids", []), dtype=object),
+                "labels": np.array(data.get("labels", []), dtype=float),
+                "probs": np.array(data.get("probs", []), dtype=float),
+                "fold": data.get("fold"),
+            }
+
+    def get_best_oof(self) -> Dict[str, Dict[str, Any]]:
+        """Return the best OOF snapshot (per ion) for the fold."""
+        return copy.deepcopy(self.best_oof_predictions)
 
     def setup_optimizer(
         self,
@@ -749,6 +711,7 @@ class E1BindingTrainer:
     def reset_metrics_tracker(self):
         """Reset metrics tracker for new fold."""
         self.metrics_tracker = MetricsTracker()
+        self.reset_oof_tracking()
 
     def plot_training_curves(
         self,
@@ -757,70 +720,11 @@ class E1BindingTrainer:
         stage: Optional[str] = None,
     ):
         """Plot and save training curves."""
-        try:
-            import matplotlib.pyplot as plt
-        except ImportError:
-            self.logger.warning("matplotlib not available, skipping plots")
-            return
-
         if save_dir is None:
             return
-
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        fold_str = str(fold) if fold is not None else "global"
-
-        for ion in self.metrics_tracker.get_all_ions():
-            ion_metrics = self.metrics_tracker.get_ion_metrics(ion)
-            train_metrics = ion_metrics["train_metrics"]
-            val_metrics = ion_metrics["val_metrics"]
-
-            if not train_metrics or not val_metrics:
-                continue
-
-            # Plot loss
-            plt.figure(figsize=(10, 6))
-            plt.plot(
-                [m["loss"] for m in train_metrics],
-                label="Train Loss",
-                marker="o",
-                markersize=3,
-            )
-            plt.plot(
-                [m["loss"] for m in val_metrics],
-                label="Val Loss",
-                marker="s",
-                markersize=3,
-            )
-            plt.title(f"Loss - Fold {fold_str} [{ion}]")
-            plt.xlabel("Epoch")
-            plt.ylabel("Loss")
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.savefig(save_dir / f"loss_fold_{fold_str}_{ion}.png", dpi=150)
-            plt.close()
-
-            # Plot AUPRC
-            plt.figure(figsize=(10, 6))
-            plt.plot(
-                [m["auprc"] for m in train_metrics],
-                label="Train AUPRC",
-                marker="o",
-                markersize=3,
-            )
-            plt.plot(
-                [m["auprc"] for m in val_metrics],
-                label="Val AUPRC",
-                marker="s",
-                markersize=3,
-            )
-            plt.title(f"AUPRC - Fold {fold_str} [{ion}]")
-            plt.xlabel("Epoch")
-            plt.ylabel("AUPRC")
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.savefig(save_dir / f"auprc_fold_{fold_str}_{ion}.png", dpi=150)
-            plt.close()
-
-        self.logger.info(f"Training curves saved to {save_dir}")
+        viz_plot_training_curves(
+            metrics_tracker=self.metrics_tracker,
+            fold=fold,
+            save_dir=save_dir,
+            stage=stage,
+        )

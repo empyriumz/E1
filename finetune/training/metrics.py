@@ -1,8 +1,120 @@
 import torch
-from torchmetrics.classification import BinaryPrecisionRecallCurve
+import numpy as np
+from typing import Dict, Any, List
+from torchmetrics.classification import (
+    BinaryPrecisionRecallCurve,
+    BinaryROC,
+    BinaryF1Score,
+    BinaryMatthewsCorrCoef,
+    BinaryRecall,
+    BinaryPrecision,
+    BinaryConfusionMatrix,
+)
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class MetricsTracker:
+    """Tracks training and validation metrics per ion for plotting."""
+
+    def __init__(self):
+        self.train_history: Dict[str, List[Dict]] = {}
+        self.val_history: Dict[str, List[Dict]] = {}
+
+    def update_train(self, metrics: Dict, ion: str):
+        if ion not in self.train_history:
+            self.train_history[ion] = []
+        self.train_history[ion].append(metrics.copy())
+
+    def update_val(self, metrics: Dict, ion: str):
+        if ion not in self.val_history:
+            self.val_history[ion] = []
+        self.val_history[ion].append(metrics.copy())
+
+    def get_all_ions(self) -> List[str]:
+        return list(set(self.train_history.keys()) | set(self.val_history.keys()))
+
+    def get_ion_metrics(self, ion: str) -> Dict:
+        return {
+            "train_metrics": self.train_history.get(ion, []),
+            "val_metrics": self.val_history.get(ion, []),
+        }
+
+
+def find_optimal_threshold(
+    predictions: torch.Tensor,
+    labels: torch.Tensor,
+    method: str = "youden",
+) -> Dict[str, Any]:
+    """
+    Find optimal classification threshold.
+
+    Args:
+        predictions: Model predictions (probabilities)
+        labels: Ground truth labels
+        method: 'youden', 'f1', or 'mcc'
+
+    Returns:
+        Dictionary with threshold and metrics
+    """
+    if predictions.ndim > 1:
+        predictions = predictions.flatten()
+
+    if not isinstance(predictions, torch.Tensor):
+        predictions = torch.tensor(predictions)
+    if not isinstance(labels, torch.Tensor):
+        labels = torch.tensor(labels)
+
+    # Convert to float32 for metric computation
+    predictions = predictions.float()
+    labels = labels.long()
+
+    if method == "youden":
+        roc = BinaryROC(thresholds=None)
+        fpr, tpr, thresholds = roc(predictions, labels)
+        fpr = fpr.numpy()
+        tpr = tpr.numpy()
+        thresholds = thresholds.float().numpy()
+        optimal_idx = np.argmax(tpr - fpr)
+        optimal_threshold = float(thresholds[optimal_idx])
+
+    elif method == "f1":
+        thresholds = np.linspace(0.01, 0.99, 100)
+        f1_scores = []
+        for t in thresholds:
+            f1_metric = BinaryF1Score(threshold=t)
+            f1_scores.append(f1_metric(predictions, labels).item())
+        optimal_idx = np.argmax(f1_scores)
+        optimal_threshold = float(thresholds[optimal_idx])
+
+    elif method == "mcc":
+        thresholds = np.linspace(0.01, 0.99, 100)
+        mcc_scores = []
+        for t in thresholds:
+            mcc_metric = BinaryMatthewsCorrCoef(threshold=t)
+            mcc_scores.append(mcc_metric(predictions, labels).item())
+        optimal_idx = np.argmax(mcc_scores)
+        optimal_threshold = float(thresholds[optimal_idx])
+
+    else:
+        optimal_threshold = 0.5
+
+    # Calculate metrics at optimal threshold
+    f1_metric = BinaryF1Score(threshold=optimal_threshold)
+    mcc_metric = BinaryMatthewsCorrCoef(threshold=optimal_threshold)
+    recall_metric = BinaryRecall(threshold=optimal_threshold)
+    precision_metric = BinaryPrecision(threshold=optimal_threshold)
+    cm_metric = BinaryConfusionMatrix(threshold=optimal_threshold)
+
+    return {
+        "threshold": optimal_threshold,
+        "f1": f1_metric(predictions, labels).item(),
+        "mcc": mcc_metric(predictions, labels).item(),
+        "recall": recall_metric(predictions, labels).item(),
+        "precision": precision_metric(predictions, labels).item(),
+        "confusion_matrix": cm_metric(predictions, labels).numpy(),
+    }
 
 
 def high_recall_auprc(y_true, y_pred_proba, recall_threshold=0.7):

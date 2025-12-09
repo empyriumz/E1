@@ -277,6 +277,8 @@ class E1DataCollatorForResidueClassification:
             "global_position_ids": global_position_ids,
             "binding_labels": aligned_labels,
             "label_mask": label_mask,
+            # Keep protein_ids for downstream OOF tracking
+            "protein_ids": [ex.get("protein_id") for ex in examples],
         }
 
 

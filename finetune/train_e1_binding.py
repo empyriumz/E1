@@ -477,6 +477,9 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         total_train_hra = 0.0
         total_val_hra = 0.0
 
+        # Reset OOF buffer for this epoch
+        trainer.reset_current_oof()
+
         # Update dataset epoch for MSA sampling variation
         for ion in ion_list:
             datasets[ion][0].set_epoch(epoch)
@@ -563,6 +566,10 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
             for ion in ion_list:
                 best_epoch_metrics[ion] = val_metrics_per_ion[ion].copy()
 
+            # Snapshot OOF predictions for the best epoch (main process only)
+            if trainer.is_main_process:
+                trainer.snapshot_current_oof_as_best()
+
             if save_model and is_main_process():
                 fold_output_path = f"{base_output_path}/fold_{fold_idx}"
                 Path(fold_output_path).mkdir(parents=True, exist_ok=True)
@@ -625,7 +632,7 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         "best_total_auprc": best_total_auprc,
         "best_total_hra": best_total_hra,
         "model_path": best_model_path,
-        "oof_predictions": trainer.oof_predictions.copy(),
+        "oof_predictions": trainer.get_best_oof(),
     }
 
     if is_main_process():
@@ -690,6 +697,11 @@ def run_cv(conf, train_fn, base_output_path: str):
     if is_main_process():
         log_cv_summary(all_fold_results, conf)
 
+        # Aggregate and persist OOF predictions for downstream analysis
+        aggregate_and_save_oof(
+            all_fold_results, save_path=Path("results") / "oof_preds.npz"
+        )
+
         logging.info(
             f"\nK-fold cross-validation completed at {datetime.datetime.now().strftime('%m-%d %H:%M')}"
         )
@@ -748,6 +760,61 @@ def log_cv_summary(all_fold_results: list, conf):
     overall_mean = np.mean([result["best_total_auprc"] for result in all_fold_results])
     overall_std = np.std([result["best_total_auprc"] for result in all_fold_results])
     logging.info(f"Overall Average AUPRC: {overall_mean:.3f} ± {overall_std:.3f}")
+
+
+def aggregate_and_save_oof(all_fold_results: list, save_path: Path):
+    """
+    Aggregate OOF predictions across folds and persist to NPZ.
+
+    Saved keys: ids (protein_id:position), labels, probs, folds, ions.
+    """
+    ids = []
+    labels = []
+    probs = []
+    folds = []
+    ions = []
+
+    for fold_result in all_fold_results:
+        fold_idx = fold_result.get("fold")
+        fold_oof = fold_result.get("oof_predictions") or {}
+
+        for ion, data in fold_oof.items():
+            ion_ids = data.get("ids")
+            ion_labels = data.get("labels")
+            ion_probs = data.get("probs")
+
+            if ion_ids is None or ion_labels is None or ion_probs is None:
+                continue
+
+            ids.extend(list(ion_ids))
+            labels.extend(list(ion_labels))
+            probs.extend(list(ion_probs))
+
+            fold_value = data.get("fold", fold_idx)
+            folds.extend([fold_value] * len(ion_probs))
+            ions.extend([ion] * len(ion_probs))
+
+    if not ids:
+        logging.warning("No OOF predictions found; skipping NPZ export.")
+        return None
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    np.savez(
+        save_path,
+        ids=np.array(ids, dtype=object),
+        labels=np.array(labels, dtype=float),
+        probs=np.array(probs, dtype=float),
+        folds=np.array(folds, dtype=int),
+        ions=np.array(ions, dtype=object),
+    )
+
+    logging.info(
+        f"Aggregated OOF predictions saved to {save_path} "
+        f"(records={len(ids)}, folds={len(set(folds))})"
+    )
+    return save_path
 
 
 def main(conf):
