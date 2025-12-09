@@ -1,4 +1,5 @@
 results/
+.agent/rules
 run-*.sh
 finetune/msa
 # Byte-compiled / optimized / DLL files

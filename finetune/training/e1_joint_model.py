@@ -24,6 +24,10 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
     E1 model with joint BCE (binding) and MLM losses.
 
     loss = loss_bce + mlm_weight * loss_mlm
+
+    Supports configurable loss functions:
+    - "bce": Binary Cross-Entropy with optional pos_weight
+    - "focal": Focal Loss for handling class imbalance
     """
 
     def __init__(
@@ -33,7 +37,23 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
         dropout: float = 0.1,
         mlm_weight: float = 0.4,
         freeze_backbone: bool = False,
+        loss_type: str = "bce",
+        focal_gamma: float = 2.0,
+        focal_alpha: float = 0.25,
     ):
+        """
+        Initialize joint binding + MLM model.
+
+        Args:
+            e1_model: E1 model with LoRA adapters
+            ion_types: List of ion types for classification heads
+            dropout: Dropout rate for classification heads
+            mlm_weight: Weight for MLM loss (loss = BCE + mlm_weight * MLM)
+            freeze_backbone: Whether to freeze backbone (not needed with LoRA)
+            loss_type: "bce" or "focal"
+            focal_gamma: Gamma parameter for focal loss
+            focal_alpha: Alpha parameter for focal loss
+        """
         if not hasattr(e1_model, "mlm_head"):
             raise ValueError(
                 "Joint training requires a pretrained mlm_head on e1_model."
@@ -44,6 +64,9 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
             ion_types=ion_types,
             dropout=dropout,
             freeze_backbone=freeze_backbone,
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            focal_alpha=focal_alpha,
         )
         cfg = self.e1_backbone.config
         self.mlm_weight = mlm_weight
@@ -85,16 +108,30 @@ class E1ForJointBindingMLM(E1ForResidueClassification):
         hidden_states = backbone_outputs.last_hidden_state
 
         # Binding logits and loss
+        # Binding logits and loss
         logits_binding = self.classifier_heads[ion](hidden_states)
         loss_bce = None
         if labels is not None:
-            if pos_weight is not None:
-                criterion = nn.BCEWithLogitsLoss(
-                    pos_weight=pos_weight, reduction="none"
-                )
+            if self.loss_type == "focal":
+                loss_bce = self.focal_loss_fn(logits_binding, labels.float())
+
+            elif self.loss_type == "bce":
+
+                if pos_weight is not None:
+                    loss_bce = nn.functional.binary_cross_entropy_with_logits(
+                        logits_binding,
+                        labels.float(),
+                        pos_weight=pos_weight,
+                        reduction="none",
+                    )
+                else:
+                    loss_bce = nn.functional.binary_cross_entropy_with_logits(
+                        logits_binding, labels.float(), reduction="none"
+                    )
+
             else:
-                criterion = nn.BCEWithLogitsLoss(reduction="none")
-            loss_bce = criterion(logits_binding, labels.float())
+                raise ValueError(f"Unknown loss_type: {self.loss_type}")
+
             if label_mask is not None:
                 loss_bce = loss_bce * label_mask.float()
                 denom = label_mask.sum()

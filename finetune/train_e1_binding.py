@@ -50,6 +50,7 @@ from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
 from training.e1_binding_trainer import E1BindingTrainer
 from training.e1_finetune_utils import load_e1_model
 from training.e1_joint_model import E1ForJointBindingMLM
+from training.loss_functions import compute_pos_weight
 from modeling_e1 import compile_flex_attention_if_enabled
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,9 @@ def load_e1_for_classification(
     model_dtype: str = None,
     device: torch.device = None,
     mlm_weight: float = 0.0,
+    loss_type: str = "bce",
+    focal_gamma: float = 2.0,
+    focal_alpha: float = 0.25,
 ) -> E1ForResidueClassification:
     """
     Load E1 model with LoRA and wrap with classification heads.
@@ -182,6 +186,9 @@ def load_e1_for_classification(
             dropout=dropout,
             mlm_weight=mlm_weight,
             freeze_backbone=False,  # LoRA handles selective training
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            focal_alpha=focal_alpha,
         )
     else:
         model = E1ForResidueClassification(
@@ -189,6 +196,9 @@ def load_e1_for_classification(
             ion_types=ion_types,
             dropout=dropout,
             freeze_backbone=False,  # LoRA handles selective training
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            focal_alpha=focal_alpha,
         )
 
     # Move to device and dtype
@@ -260,6 +270,9 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         model_dtype=getattr(conf.training, "model_dtype", "bfloat16"),
         device=device,
         mlm_weight=getattr(conf.training, "mlm_weight", 0.0),
+        loss_type=getattr(conf.training, "loss_type", "bce"),
+        focal_gamma=getattr(conf.training, "focal_gamma", 2.0),
+        focal_alpha=getattr(conf.training, "focal_alpha", 0.25),
     )
 
     # Wrap model with DDP if distributed
@@ -285,6 +298,9 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     msa_config = conf.training.get("msa_sampling", {})
     val_msa_config = conf.training.get("validation_msa_sampling", msa_config)
 
+    # Label smoothing: apply only to training, not validation
+    label_smoothing = getattr(conf.training, "label_smoothing", 0.0)
+
     mlm_weight = getattr(conf.training, "mlm_weight", 0.0)
     if mlm_weight and mlm_weight > 0:
         train_collator = E1DataCollatorForJointBindingMLM(
@@ -292,21 +308,25 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
             max_total_tokens=msa_config.get("max_token_length", 8192),
             max_query_tokens=msa_config.get("max_query_length", 1024),
             ignore_index=-100,
+            label_smoothing=label_smoothing,  # Apply smoothing for training
         )
         val_collator = E1DataCollatorForJointBindingMLM(
             mlm_probability=getattr(conf.training, "mlm_probability", 0.15),
             max_total_tokens=val_msa_config.get("max_token_length", 12288),
             max_query_tokens=val_msa_config.get("max_query_length", 2048),
             ignore_index=-100,
+            label_smoothing=0.0,  # NO smoothing for validation
         )
     else:
         train_collator = E1DataCollatorForResidueClassification(
             max_total_tokens=msa_config.get("max_token_length", 8192),
             max_query_tokens=msa_config.get("max_query_length", 1024),
+            label_smoothing=label_smoothing,  # Apply smoothing for training
         )
         val_collator = E1DataCollatorForResidueClassification(
             max_total_tokens=val_msa_config.get("max_token_length", 12288),
             max_query_tokens=val_msa_config.get("max_query_length", 2048),
+            label_smoothing=0.0,  # NO smoothing for validation
         )
 
     # Prepare datasets for each ion
@@ -345,7 +365,7 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     for ion in ion_list:
         # Use shared splits for REE-related ions, otherwise let each ion compute its own
         if ion in ree_related_ions:
-            train_dataset, val_dataset, pos_weight = (
+            train_dataset, val_dataset, class_counts = (
                 create_binding_datasets_from_config(
                     data_conf=dict(conf.data),
                     training_conf=dict(conf.training),
@@ -357,7 +377,7 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
                 )
             )
         else:
-            train_dataset, val_dataset, pos_weight = (
+            train_dataset, val_dataset, class_counts = (
                 create_binding_datasets_from_config(
                     data_conf=dict(conf.data),
                     training_conf=dict(conf.training),
@@ -367,12 +387,24 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
                 )
             )
         datasets[ion] = (train_dataset, val_dataset)
+
+        # Compute pos_weight from class counts using configured mode
+        pos_count, neg_count = class_counts
+        pos_weight_mode = getattr(conf.training, "pos_weight_mode", None)
+        pos_weight = compute_pos_weight(
+            pos_count, neg_count, mode=pos_weight_mode, device=device
+        )
         pos_weights[ion] = pos_weight
 
         if is_main_process():
-            logging.info(
-                f"  {ion}: train={len(train_dataset)}, val={len(val_dataset)}, pos_weight={pos_weight.item():.2f}"
-            )
+            if pos_weight is not None:
+                logging.info(
+                    f"  {ion}: train={len(train_dataset)}, val={len(val_dataset)}, pos_weight={pos_weight.item():.2f}"
+                )
+            else:
+                logging.info(
+                    f"  {ion}: train={len(train_dataset)}, val={len(val_dataset)}, pos_weight=None (no weighting)"
+                )
 
     # Initialize trainer (pass DDP info)
     trainer = E1BindingTrainer(
@@ -383,6 +415,7 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         is_distributed=is_distributed(),
         world_size=get_world_size(),
         rank=get_rank(),
+        pos_weights=pos_weights,
     )
 
     # Create dataloaders with DistributedSampler if needed
@@ -457,7 +490,6 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
                 train_loaders[ion],
                 optimizer,
                 ion,
-                pos_weight=pos_weights[ion],
             )
 
             # Validate (only on main process to avoid redundant computation)

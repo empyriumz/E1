@@ -31,11 +31,13 @@ class E1DataCollatorForJointBindingMLM:
         max_total_tokens: int = 8192,
         max_query_tokens: int = 1024,
         ignore_index: int = -100,
+        label_smoothing: float = 0.0,
     ):
         self.binding_collator = E1DataCollatorForResidueClassification(
             max_total_tokens=max_total_tokens,
             max_query_tokens=max_query_tokens,
             ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
         )
         # Reuse preparer from binding collator for token ids / vocab info
         self.batch_preparer: E1BatchPreparer = self.binding_collator.batch_preparer
@@ -45,6 +47,7 @@ class E1DataCollatorForJointBindingMLM:
         self.vocab_size = len(self.batch_preparer.vocab)
         self.boundary_token_ids = self.batch_preparer.boundary_token_ids
         self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
 
     def _apply_mlm_masking(
         self,

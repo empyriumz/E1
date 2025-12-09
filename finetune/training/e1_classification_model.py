@@ -73,6 +73,9 @@ class E1ForResidueClassification(E1ForMaskedLM):
         ion_types: Optional[List[str]] = None,
         dropout: float = 0.1,
         freeze_backbone: bool = False,
+        loss_type: str = "bce",
+        focal_gamma: float = 2.0,
+        focal_alpha: float = 0.25,
     ):
         """
         Initialize E1ForResidueClassification.
@@ -82,6 +85,9 @@ class E1ForResidueClassification(E1ForMaskedLM):
             ion_types: List of ion types to create classification heads for
             dropout: Dropout rate for classification heads
             freeze_backbone: Whether to freeze the E1 backbone (only train heads)
+            loss_type: "bce" or "focal"
+            focal_gamma: Gamma parameter for focal loss
+            focal_alpha: Alpha parameter for focal loss
         """
         super().__init__(e1_model.config)
 
@@ -130,6 +136,21 @@ class E1ForResidueClassification(E1ForMaskedLM):
         logger.info(f"  - Ion types: {self.ion_types}")
         logger.info(f"  - Dropout: {dropout}")
         logger.info(f"  - Backbone frozen: {freeze_backbone}")
+        logger.info(f"  - Loss type: {loss_type}")
+
+        # Store loss configuration and pre-create loss function
+        self.loss_type = loss_type
+        # Store loss configuration and pre-create loss function
+        self.loss_type = loss_type
+        self.focal_loss_fn = None
+
+        if loss_type == "focal":
+            from training.loss_functions import FocalLoss
+
+            self.focal_loss_fn = FocalLoss(
+                gamma=focal_gamma, alpha=focal_alpha, reduction="none"
+            )
+            logger.info(f"  - Focal loss: gamma={focal_gamma}, alpha={focal_alpha}")
 
     def _init_classifier_weights(self):
         """Initialize classification head weights with Xavier uniform."""
@@ -149,11 +170,6 @@ class E1ForResidueClassification(E1ForMaskedLM):
     # NOTE: Removed custom to() method. The default nn.Module.to() implementation
     # correctly recurses into all submodules (including _original_model and classifier_heads).
     # The previous manual override failed to move self.model (if it existed) or other attributes.
-
-    def to(self, device=None, dtype=None, *args, **kwargs):
-        """Move model to device and/or dtype."""
-        super().to(device=device, dtype=dtype, *args, **kwargs)
-        return self
 
     def get_encoder_output(
         self,
@@ -212,7 +228,6 @@ class E1ForResidueClassification(E1ForMaskedLM):
             ion: Ion type to classify (e.g., "CA", "ZN")
             labels: Binary labels (batch_size, seq_len), values: 0, 1, or ignore_index
             label_mask: Boolean mask for valid label positions (batch_size, seq_len)
-            pos_weight: Positive class weight for BCE loss
             output_hidden_states: Whether to return all hidden states
             output_attentions: Whether to return attention weights
 
@@ -239,16 +254,22 @@ class E1ForResidueClassification(E1ForMaskedLM):
 
         loss = None
         if labels is not None:
-            # Create loss function
-            if pos_weight is not None:
-                criterion = nn.BCEWithLogitsLoss(
-                    pos_weight=pos_weight, reduction="none"
-                )
-            else:
-                criterion = nn.BCEWithLogitsLoss(reduction="none")
+            if self.loss_type == "focal":
+                loss = self.focal_loss_fn(logits, labels.float())
 
-            # Compute loss
-            loss = criterion(logits, labels.float())
+            elif self.loss_type == "bce":
+
+                if pos_weight is not None:
+                    loss = nn.functional.binary_cross_entropy_with_logits(
+                        logits, labels.float(), pos_weight=pos_weight, reduction="none"
+                    )
+                else:
+                    loss = nn.functional.binary_cross_entropy_with_logits(
+                        logits, labels.float(), reduction="none"
+                    )
+
+            else:
+                raise ValueError(f"Unknown loss_type: {self.loss_type}")
 
             # Apply mask if provided
             if label_mask is not None:

@@ -272,15 +272,12 @@ class E1BindingDataset(Dataset):
             "protein_id": protein_id,
         }
 
-    def get_pos_weight(self, multiplier: float = 1.0) -> torch.Tensor:
+    def get_class_counts(self) -> tuple:
         """
-        Calculate positive class weight for BCE loss.
-
-        Args:
-            multiplier: Factor to multiply the computed weight
+        Get total positive and negative residue counts.
 
         Returns:
-            pos_weight tensor for BCEWithLogitsLoss
+            Tuple of (total_positive, total_negative)
         """
         total_pos = 0
         total_neg = 0
@@ -292,17 +289,12 @@ class E1BindingDataset(Dataset):
             total_pos += pos_count
             total_neg += neg_count
 
-        if total_pos > 0:
-            pos_weight = (total_neg / total_pos) * multiplier
-        else:
-            pos_weight = 1.0
-
         logger.info(
-            f"E1BindingDataset [{self.ion_type}] pos_weight: {pos_weight:.2f} "
-            f"(pos={total_pos}, neg={total_neg}, ratio={total_neg/max(total_pos,1):.1f}:1)"
+            f"E1BindingDataset [{self.ion_type}] class counts: "
+            f"pos={total_pos}, neg={total_neg}, ratio={total_neg/max(total_pos,1):.1f}:1"
         )
 
-        return torch.tensor([pos_weight], dtype=torch.float)
+        return total_pos, total_neg
 
 
 class E1BindingDatasetREE(Dataset):
@@ -486,8 +478,8 @@ class E1BindingDatasetREE(Dataset):
             "protein_id": protein_id,
         }
 
-    def get_pos_weight(self, multiplier: float = 1.0) -> torch.Tensor:
-        """Calculate positive class weight for BCE loss from combined REE labels."""
+    def get_class_counts(self) -> tuple:
+        """Get total positive and negative residue counts from combined REE labels."""
         total_pos = 0
         total_neg = 0
 
@@ -498,17 +490,12 @@ class E1BindingDatasetREE(Dataset):
             total_pos += pos_count
             total_neg += neg_count
 
-        if total_pos > 0:
-            pos_weight = (total_neg / total_pos) * multiplier
-        else:
-            pos_weight = 1.0
-
         logger.info(
-            f"E1BindingDatasetREE pos_weight: {pos_weight:.2f} "
-            f"(pos={total_pos}, neg={total_neg}, ratio={total_neg/max(total_pos,1):.1f}:1)"
+            f"E1BindingDatasetREE class counts: "
+            f"pos={total_pos}, neg={total_neg}, ratio={total_neg/max(total_pos,1):.1f}:1"
         )
 
-        return torch.tensor([pos_weight], dtype=torch.float)
+        return total_pos, total_neg
 
 
 class ConcatE1BindingDataset(Dataset):
@@ -670,7 +657,7 @@ def create_binding_datasets_from_config(
     seed: int = 42,
     train_ids: Optional[List[str]] = None,
     val_ids: Optional[List[str]] = None,
-) -> Tuple[E1BindingDataset, E1BindingDataset, torch.Tensor]:
+) -> Tuple[E1BindingDataset, E1BindingDataset, tuple]:
     """
     Create train and validation datasets from configuration.
 
@@ -684,7 +671,7 @@ def create_binding_datasets_from_config(
         val_ids: Optional pre-computed validation IDs
 
     Returns:
-        Tuple of (train_dataset, val_dataset, pos_weight)
+        Tuple of (train_dataset, val_dataset, (pos_count, neg_count))
     """
     # Special handling for REE: combine LREE and HREE datasets
     if ion_type == "REE":
@@ -837,11 +824,10 @@ def create_binding_datasets_from_config(
         train_dataset = E1BindingDatasetREE(lree_train, hree_train)
         val_dataset = E1BindingDatasetREE(lree_val, hree_val)
 
-        # Calculate pos_weight from training set
-        pos_weight_multiplier = training_conf.get("pos_ratio_multiplier", 1.0)
-        pos_weight = train_dataset.get_pos_weight(multiplier=pos_weight_multiplier)
+        # Get class counts from training set for pos_weight computation
+        pos_count, neg_count = train_dataset.get_class_counts()
 
-        return train_dataset, val_dataset, pos_weight
+        return train_dataset, val_dataset, (pos_count, neg_count)
 
     # Standard handling for other ion types
     fasta_path = data_conf.get("fasta_path", "")
@@ -936,8 +922,7 @@ def create_binding_datasets_from_config(
             f"  Val:   max_num_samples={val_max_num_samples}, max_token_length={val_max_token_length}"
         )
 
-    # Calculate pos_weight from training set
-    pos_weight_multiplier = training_conf.get("pos_ratio_multiplier", 1.0)
-    pos_weight = train_dataset.get_pos_weight(multiplier=pos_weight_multiplier)
+    # Get class counts from training set for pos_weight computation
+    pos_count, neg_count = train_dataset.get_class_counts()
 
-    return train_dataset, val_dataset, pos_weight
+    return train_dataset, val_dataset, (pos_count, neg_count)

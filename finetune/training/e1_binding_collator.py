@@ -45,6 +45,7 @@ class E1DataCollatorForResidueClassification:
         max_total_tokens: int = 8192,
         max_query_tokens: int = 1024,
         ignore_index: int = -100,
+        label_smoothing: float = 0.0,
     ):
         """
         Initialize E1DataCollatorForResidueClassification.
@@ -55,12 +56,15 @@ class E1DataCollatorForResidueClassification:
             max_query_tokens: Maximum tokens for query sequence.
                               Query sequences exceeding this will be truncated.
             ignore_index: Label value for positions to ignore during loss computation.
+            label_smoothing: Amount of label smoothing to apply (0.0 = no smoothing).
+                             Labels become: 0 -> smoothing, 1 -> 1-smoothing.
         """
         self.batch_preparer = E1BatchPreparer()
         self.pad_token_id = self.batch_preparer.pad_token_id
         self.max_total_tokens = max_total_tokens
         self.max_query_tokens = max_query_tokens
         self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
 
         # Get boundary token IDs for special token detection
         self.boundary_token_ids = self.batch_preparer.boundary_token_ids
@@ -70,6 +74,8 @@ class E1DataCollatorForResidueClassification:
         logger.info(f"  - Ignore index: {ignore_index}")
         logger.info(f"  - Max total tokens: {max_total_tokens}")
         logger.info(f"  - Max query tokens: {max_query_tokens}")
+        if label_smoothing > 0:
+            logger.info(f"  - Label smoothing: {label_smoothing}")
 
     def _truncate_sequence_and_labels(
         self, sequence: str, labels: List[int], msa_context: Optional[str] = None
@@ -184,9 +190,16 @@ class E1DataCollatorForResidueClassification:
             else:
                 num_to_assign = num_labels
 
-            # Assign labels to valid positions
+            # Assign labels to valid positions (with optional label smoothing)
             for i in range(num_to_assign):
-                aligned_labels[batch_idx, valid_indices[i]] = float(sample_labels[i])
+                label_val = float(sample_labels[i])
+                # Apply label smoothing: 0 -> smoothing, 1 -> 1-smoothing
+                if self.label_smoothing > 0:
+                    if label_val == 1.0:
+                        label_val = 1.0 - self.label_smoothing
+                    else:
+                        label_val = self.label_smoothing
+                aligned_labels[batch_idx, valid_indices[i]] = label_val
 
         return aligned_labels
 

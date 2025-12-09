@@ -291,7 +291,8 @@ class E1ForResidueClassification(nn.Module):
         ion: Ion type to classify (e.g., "CA")
         labels: Binary labels (optional)
         label_mask: Valid position mask (optional)
-        pos_weight: Class weight for BCE loss (optional)
+        pos_weight: Positive class weight for BCE loss (optional)
+
     
     Returns:
         E1ResidueClassificationOutput with loss, logits, last_hidden_state
@@ -312,6 +313,7 @@ class E1BindingTrainer:
         is_distributed: Whether using DDP
         world_size: Number of processes
         rank: Current process rank
+        pos_weights: Dictionary of positive class weights per ion
     
     Key Methods:
         create_dataloaders(): Create train/val loaders with DistributedSampler
@@ -329,4 +331,5 @@ class E1BindingTrainer:
 - **v1.3**: Fixed NCCL timeout by synchronizing early stopping across ranks
 - **v1.4**: Fixed data leakage by ensuring LREE, HREE, and REE use shared train/val splits
 - **v1.5**: LoRA-only checkpointing (~99% storage reduction); configurable `train_mlm_head` option
+- **v1.6**: Refactored `pos_weight` to be stateless and passed dynamically during forward pass
 

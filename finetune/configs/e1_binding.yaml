@@ -51,9 +51,20 @@ training:
   # Early stopping patience (in epochs)
   early_stop_patience: 5
   
-  # Positive class weight multiplier for BCE loss
-  # Higher values give more weight to positive (binding) samples
-  pos_ratio_multiplier: 5.0
+  # Positive class weight mode for BCE loss
+  # Options: null (no weighting), "linear" (neg/pos), "sqrt" (sqrt(neg/pos))
+  pos_weight_mode: "sqrt"
+  
+  # Label smoothing (training only, 0.0 = disabled)
+  # Labels become: 0 -> smoothing, 1 -> 1-smoothing
+  label_smoothing: 0.05
+  
+  # Loss function type: "bce" or "focal"
+  loss_type: "bce"
+  
+  # Focal loss hyperparameters (only used if loss_type: "focal")
+  focal_gamma: 2.0  # Focusing parameter (higher = more focus on hard examples)
+  focal_alpha: 0.25  # Positive class weight
   
   # Threshold optimization method: "youden", "f1", or "mcc"
   threshold_method: "youden"

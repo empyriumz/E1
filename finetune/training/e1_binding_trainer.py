@@ -189,6 +189,7 @@ class E1BindingTrainer:
         is_distributed: bool = False,
         world_size: int = 1,
         rank: int = 0,
+        pos_weights: Optional[Dict[str, torch.Tensor]] = None,
     ):
         """
         Initialize trainer.
@@ -201,6 +202,7 @@ class E1BindingTrainer:
             is_distributed: Whether using distributed training
             world_size: Number of processes in distributed training
             rank: Current process rank
+            pos_weights: Dictionary mapping ion type to positive class weight tensor
         """
         self.model = model
         self.conf = conf
@@ -210,6 +212,7 @@ class E1BindingTrainer:
         self.world_size = world_size
         self.rank = rank
         self.is_main_process = rank == 0
+        self.pos_weights = pos_weights or {}
 
         # Get the underlying model if wrapped in DDP
         self._unwrapped_model = model.module if hasattr(model, "module") else model
@@ -235,9 +238,6 @@ class E1BindingTrainer:
 
         # OOF predictions storage
         self.oof_predictions = {"predictions": {}, "labels": {}}
-
-        # Loss function - will be configured per ion with pos_weight
-        self.criterion = nn.BCEWithLogitsLoss(reduction="none")
 
         # Gradient accumulation
         self.accum_steps = getattr(conf.training, "accum_steps", 1)
@@ -347,7 +347,6 @@ class E1BindingTrainer:
         train_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
         ion: str,
-        pos_weight: Optional[torch.Tensor] = None,
     ) -> Dict[str, float]:
         """
         Train for one epoch.
@@ -369,14 +368,15 @@ class E1BindingTrainer:
         all_labels = []
         num_batches = 0
 
-        # Move pos_weight to device if provided
-        if pos_weight is not None:
-            pos_weight = pos_weight.to(self.device)
-
         optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(train_loader):
             batch = self._move_batch_to_device(batch)
+
+            # Get pos_weight for this ion
+            pos_weight = self.pos_weights.get(ion)
+            if pos_weight is not None:
+                pos_weight = pos_weight.to(self.device)
 
             with autocast(
                 device_type="cuda",
@@ -391,8 +391,8 @@ class E1BindingTrainer:
                     ion=ion,
                     labels=batch["binding_labels"],
                     label_mask=batch["label_mask"],
-                    pos_weight=pos_weight,
                     mlm_labels=batch["mlm_labels"],
+                    pos_weight=pos_weight,
                 )
 
                 loss = outputs.loss / self.accum_steps
@@ -432,7 +432,8 @@ class E1BindingTrainer:
 
         # Compute metrics (convert to float32 for torchmetrics)
         all_probs = torch.cat(all_probs).float()
-        all_labels = torch.cat(all_labels).long()
+        # Round floating point labels (from smoothing) back to integers for metrics
+        all_labels = (torch.cat(all_labels) > 0.5).long()
 
         train_metrics = {
             "loss": total_loss / num_batches,
@@ -479,6 +480,11 @@ class E1BindingTrainer:
         for batch in val_loader:
             batch = self._move_batch_to_device(batch)
 
+            # Get pos_weight for this ion
+            pos_weight = self.pos_weights.get(ion)
+            if pos_weight is not None:
+                pos_weight = pos_weight.to(self.device)
+
             with autocast(
                 device_type="cuda",
                 dtype=torch.bfloat16,
@@ -493,6 +499,7 @@ class E1BindingTrainer:
                     labels=batch["binding_labels"],
                     label_mask=batch["label_mask"],
                     mlm_labels=batch["mlm_labels"],
+                    pos_weight=pos_weight,
                 )
 
                 if outputs.loss is not None:
@@ -516,7 +523,8 @@ class E1BindingTrainer:
 
         # Compute metrics (convert to float32 for torchmetrics)
         all_probs = torch.cat(all_probs).float()
-        all_labels = torch.cat(all_labels).long()
+        # Round floating point labels (from smoothing) back to integers for metrics
+        all_labels = (torch.cat(all_labels) > 0.5).long()
 
         val_auc = self.metric_auc(all_probs, all_labels).item()
         val_auprc = self.metric_auprc(all_probs, all_labels).item()
