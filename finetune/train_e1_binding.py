@@ -698,8 +698,16 @@ def run_cv(conf, train_fn, base_output_path: str):
         log_cv_summary(all_fold_results, conf)
 
         # Aggregate and persist OOF predictions for downstream analysis
-        aggregate_and_save_oof(
-            all_fold_results, save_path=Path("results") / "oof_preds.npz"
+        oof_path = Path(base_output_path) / "oof_preds.npz"
+        aggregate_and_save_oof(all_fold_results, save_path=oof_path)
+
+        # Compute and save global thresholds from OOF predictions
+        threshold_method = getattr(conf.training, "threshold_method", "youden")
+        thresholds_path = Path(base_output_path) / "global_thresholds.yaml"
+        compute_and_save_global_thresholds(
+            oof_path=oof_path,
+            output_path=thresholds_path,
+            threshold_method=threshold_method,
         )
 
         logging.info(
@@ -815,6 +823,93 @@ def aggregate_and_save_oof(all_fold_results: list, save_path: Path):
         f"(records={len(ids)}, folds={len(set(folds))})"
     )
     return save_path
+
+
+def compute_and_save_global_thresholds(
+    oof_path: Path,
+    output_path: Path,
+    threshold_method: str = "youden",
+) -> Path:
+    """
+    Compute global thresholds from OOF predictions and save to YAML.
+
+    This function loads aggregated OOF predictions, computes optimal thresholds
+    per ion using the specified method, and saves them for use during inference.
+
+    Args:
+        oof_path: Path to oof_preds.npz file
+        output_path: Path to save global_thresholds.yaml
+        threshold_method: Method for threshold optimization ("youden", "f1", "mcc")
+
+    Returns:
+        Path to the saved thresholds YAML file
+    """
+    from training.metrics import find_optimal_threshold
+    import yaml
+
+    if not oof_path.exists():
+        logging.warning(
+            f"OOF predictions not found at {oof_path}, skipping threshold computation"
+        )
+        return None
+
+    # Load OOF predictions
+    oof_data = np.load(oof_path, allow_pickle=True)
+    labels = oof_data["labels"]
+    probs = oof_data["probs"]
+    ions = oof_data["ions"]
+
+    # Get unique ions
+    unique_ions = np.unique(ions)
+
+    thresholds = {}
+    for ion in unique_ions:
+        ion_mask = ions == ion
+        ion_labels = labels[ion_mask]
+        ion_probs = probs[ion_mask]
+
+        if len(ion_labels) == 0:
+            logging.warning(f"No OOF predictions for ion {ion}, skipping")
+            continue
+
+        # Compute optimal threshold
+        threshold_results = find_optimal_threshold(
+            predictions=ion_probs,
+            labels=ion_labels,
+            method=threshold_method,
+        )
+
+        thresholds[str(ion)] = {
+            "threshold": float(threshold_results["threshold"]),
+            "f1": float(threshold_results["f1"]),
+            "mcc": float(threshold_results["mcc"]),
+            "recall": float(threshold_results["recall"]),
+            "precision": float(threshold_results["precision"]),
+            "num_samples": int(len(ion_labels)),
+            "pos_ratio": float(np.mean(ion_labels)),
+        }
+
+        logging.info(
+            f"Global threshold for {ion}: {threshold_results['threshold']:.4f} "
+            f"(F1={threshold_results['f1']:.3f}, MCC={threshold_results['mcc']:.3f}, "
+            f"R={threshold_results['recall']:.3f}, P={threshold_results['precision']:.3f})"
+        )
+
+    # Save to YAML
+    output_data = {
+        "threshold_method": threshold_method,
+        "computed_from": str(oof_path),
+        "thresholds": thresholds,
+    }
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, "w") as f:
+        yaml.dump(output_data, f, default_flow_style=False, sort_keys=False)
+
+    logging.info(f"Global thresholds saved to {output_path}")
+    return output_path
 
 
 def main(conf):

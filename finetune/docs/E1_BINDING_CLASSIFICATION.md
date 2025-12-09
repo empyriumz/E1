@@ -225,8 +225,24 @@ results/e1_binding/
 │       └── auprc_fold_1_CA.png
 ├── fold_2/
 │   └── ...
+├── oof_preds.npz           # Aggregated OOF predictions
+├── global_thresholds.yaml  # Global thresholds per ion computed from OOF
+├── config.yaml             # Copy of training configuration
 └── training.log
 ```
+
+### Out-of-Fold (OOF) predictions
+
+- During K-fold CV, the best epoch per fold (by validation HRA) snapshots OOF predictions.
+- After all folds complete, aggregated OOF predictions are saved to `{output_dir}/oof_preds.npz`.
+- Contents:
+  - `ids`: per-residue identifiers formatted as `protein_id:position` (0-based position within the query sequence).
+  - `labels`: ground-truth binary labels (float array).
+  - `probs`: predicted probabilities from the best checkpoint of each fold (float array).
+  - `folds`: fold index for each record (int array).
+  - `ions`: ion type for each record (object array).
+- Global thresholds are automatically computed from OOF predictions and saved to `global_thresholds.yaml`.
+- Validation uses `label_smoothing=0` by config, so labels in OOF are unsmoothed.
 
 ### Checkpoint Contents
 
@@ -267,6 +283,63 @@ models = load_ensemble_models(
     device=torch.device("cuda"),
 )
 ```
+
+## Test Set Inference
+
+After training completes, run inference on a held-out test set using the ensemble of K models:
+
+### Basic Usage
+
+```bash
+# Using explicit test FASTA path with {ION} placeholder
+python finetune/infer_e1_binding.py \
+    --run_dir results/e1_binding/2025-12-09-13-11 \
+    --test_fasta /path/to/test_data/{ION}_test.fasta \
+    --output_dir results/test_evaluation
+
+# With custom MSA directory
+python finetune/infer_e1_binding.py \
+    --run_dir results/e1_binding/2025-12-09-13-11 \
+    --test_fasta /path/to/test_data/{ION}_test.fasta \
+    --msa_dir /path/to/test_msa/{ION}
+```
+
+### CLI Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--run_dir` | Path to training run directory | Required |
+| `--output_dir` | Directory for results | `{run_dir}/test_results` |
+| `--test_fasta` | Test FASTA path (supports `{ION}` placeholder) | From config |
+| `--msa_dir` | Test MSA directory (supports `{ION}` placeholder) | From config |
+| `--device` | CUDA device | `cuda:0` |
+| `--num_folds` | Number of folds to load | From config |
+| `--batch_size` | Inference batch size | `4` |
+
+### Expected Files in `run_dir`
+
+The inference script expects the following files:
+- `config.yaml`: Training configuration
+- `global_thresholds.yaml`: Thresholds computed from OOF predictions
+- `fold_*/best_e1_binding_model_lora/`: LoRA adapters per fold
+- `fold_*/best_e1_binding_model_heads.pt`: Classifier heads per fold
+
+### Output Structure
+
+```
+{output_dir}/
+├── test_metrics.csv         # Per-ion metrics
+├── summary.yaml             # Overall summary with averages
+├── test_predictions.npz     # Raw predictions per ion
+├── inference.log            # Inference log
+└── plots/
+    └── threshold_analysis_*.png  # ROC and PR curves per ion
+```
+
+### Metrics Computed
+
+- **Threshold-independent**: AUC-ROC, AUPRC, High-recall AUPRC (R≥0.7, R≥0.8)
+- **Threshold-dependent** (using global threshold): F1, MCC, Precision, Recall, Confusion Matrix
 
 ## API Reference
 
