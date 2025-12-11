@@ -34,13 +34,21 @@ def is_main_process():
     return get_rank() == 0
 
 
+from datetime import timedelta
+
+
 def setup_distributed():
     """Initialize distributed training environment."""
     if not is_distributed():
         return None
 
-    # Initialize process group
-    dist.init_process_group(backend="nccl")
+    # Initialize process group with configurable timeout
+    timeout_env = os.environ.get("TORCH_DIST_TIMEOUT")
+    if timeout_env:
+        timeout = timedelta(seconds=int(timeout_env))
+        dist.init_process_group(backend="nccl", timeout=timeout)
+    else:
+        dist.init_process_group(backend="nccl")
 
     local_rank = get_local_rank()
     torch.cuda.set_device(local_rank)

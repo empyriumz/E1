@@ -64,10 +64,11 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         dropout: float = 0.1,
         # Prototype configuration
         prototype_dim: Optional[int] = None,  # Defaults to hidden_size
-        use_ema_prototypes: bool = True,
-        ema_decay: float = 0.999,
         # MLM configuration
         mlm_weight: float = 1.0,
+        # Legacy parameters (ignored - kept for backward compatibility)
+        use_ema_prototypes: bool = True,  # Ignored - prototypes are now frozen
+        ema_decay: float = 0.999,  # Ignored - prototypes are now frozen
     ):
         """
         Initialize E1 contrastive learning model.
@@ -77,9 +78,9 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
             ion_types: List of ion types for classification heads
             dropout: Dropout rate for classification heads
             prototype_dim: Dimension of prototypes (defaults to hidden_size)
-            use_ema_prototypes: Whether to use EMA for prototype updates
-            ema_decay: EMA decay rate for prototypes
-            mlm_weight: Weight for MLM loss
+            mlm_weight: Weight for MLM loss component
+            use_ema_prototypes: IGNORED - prototypes are now frozen after init
+            ema_decay: IGNORED - prototypes are now frozen after init
         """
         # Initialize parent with BCE loss only (no focal loss)
         super().__init__(
@@ -93,33 +94,22 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
 
         # Prototype configuration
         self.prototype_dim = prototype_dim or self.hidden_size
-        self.use_ema_prototypes = use_ema_prototypes
-        self.ema_decay = ema_decay
         self.ion_types = ion_types
 
-        # Only store POSITIVE prototypes (negative = -positive)
-        # Shape: [hidden_size] per ion
-        self.pos_prototypes = nn.ParameterDict()
+        # Frozen positive prototypes (negative = -positive)
+        # Registered as buffers (not learnable) - initialized from class means in trainer
         for ion in ion_types:
-            # Will be initialized from class means in trainer
-            # Start with zeros - must be initialized before training
-            self.pos_prototypes[ion] = nn.Parameter(torch.zeros(self.prototype_dim))
-
-        # EMA shadow for positive prototypes only
-        if use_ema_prototypes:
-            for ion in ion_types:
-                self.register_buffer(
-                    f"ema_pos_prototype_{ion}", torch.zeros(self.prototype_dim)
-                )
+            self.register_buffer(
+                f"pos_prototype_{ion}", torch.zeros(self.prototype_dim)
+            )
 
         # Track if prototypes have been initialized
         self._prototypes_initialized = {ion: False for ion in ion_types}
 
         logger.info("E1ForContrastiveBinding initialized:")
         logger.info(f"  - Prototype dim: {self.prototype_dim}")
-        logger.info(f"  - Use EMA: {use_ema_prototypes} (decay={ema_decay})")
         logger.info(f"  - Ion types: {ion_types}")
-        logger.info("  - Prototype strategy: neg_prototype = -pos_prototype")
+        logger.info("  - Prototype strategy: FROZEN, neg_prototype = -pos_prototype")
 
     def get_prototypes(self, ion: str) -> torch.Tensor:
         """
@@ -130,10 +120,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
                 prototypes[0] = -pos_prototype (negative class)
                 prototypes[1] = pos_prototype (positive class)
         """
-        if self.use_ema_prototypes and not self.training:
-            pos_proto = getattr(self, f"ema_pos_prototype_{ion}")
-        else:
-            pos_proto = self.pos_prototypes[ion]
+        pos_proto = getattr(self, f"pos_prototype_{ion}")
 
         # Normalize the positive prototype
         pos_proto_norm = F.normalize(pos_proto.unsqueeze(0), p=2, dim=1).squeeze(0)
@@ -146,7 +133,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
 
     def set_positive_prototype(self, ion: str, prototype: torch.Tensor):
         """
-        Set the positive prototype for an ion type.
+        Set the positive prototype for an ion type (frozen after this).
 
         Args:
             ion: Ion type
@@ -155,36 +142,9 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         with torch.no_grad():
             # Normalize and set
             proto_norm = F.normalize(prototype.unsqueeze(0), p=2, dim=1).squeeze(0)
-            self.pos_prototypes[ion].data.copy_(proto_norm)
-
-            # Also update EMA if enabled
-            if self.use_ema_prototypes:
-                ema_buffer = getattr(self, f"ema_pos_prototype_{ion}")
-                ema_buffer.copy_(proto_norm)
-
+            buffer = getattr(self, f"pos_prototype_{ion}")
+            buffer.copy_(proto_norm)
             self._prototypes_initialized[ion] = True
-
-    @torch.no_grad()
-    def update_prototypes_ema(self, ion: str):
-        """Update EMA prototype from current positive prototype."""
-        if not self.use_ema_prototypes:
-            return
-
-        ema_proto = getattr(self, f"ema_pos_prototype_{ion}")
-        current_proto = self.pos_prototypes[ion].data
-
-        # Normalize current prototype
-        current_proto_norm = F.normalize(
-            current_proto.unsqueeze(0), p=2, dim=1
-        ).squeeze(0)
-
-        # EMA update: ema = decay * ema + (1 - decay) * current
-        ema_proto.mul_(self.ema_decay).add_(
-            current_proto_norm, alpha=1 - self.ema_decay
-        )
-
-        # Re-normalize
-        ema_proto.copy_(F.normalize(ema_proto.unsqueeze(0), p=2, dim=1).squeeze(0))
 
     def forward(
         self,
@@ -220,7 +180,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         Returns:
             E1ContrastiveOutput with loss components and embeddings
         """
-        if ion not in self.pos_prototypes:
+        if ion not in self.ion_types:
             raise ValueError(f"Unknown ion type: {ion}")
 
         if not self._prototypes_initialized[ion]:
@@ -356,9 +316,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
             if loss_mlm is not None:
                 loss_total = loss_total + self.mlm_weight * loss_mlm
 
-        # Update EMA prototypes during training
-        if self.training and self.use_ema_prototypes:
-            self.update_prototypes_ema(ion)
+        # Prototypes are frozen - no EMA update needed
 
         return E1ContrastiveOutput(
             loss=loss_total,
