@@ -264,14 +264,26 @@ class ConSupPrototypeLoss(nn.Module):
                     pull_mask_ratio,
                 )
 
-            # Also compute average similarities to prototypes for diagnostics
-            avg_sim_pos = sim_to_p1.mean()
-            avg_sim_neg = sim_to_p0.mean()
+            # Class-conditional similarity diagnostics
+            pos_mask = repeated_labels == 1
+            neg_mask = repeated_labels == 0
+
+            def _safe_mean(tensor):
+                if tensor.numel() == 0:
+                    return torch.tensor(0.0, device=self.device)
+                return tensor.mean()
+
+            avg_sim_pos_pos = _safe_mean(sim_to_p1[pos_mask])  # positives vs pos proto
+            avg_sim_pos_neg = _safe_mean(sim_to_p1[neg_mask])  # negatives vs pos proto
+            avg_sim_neg_pos = _safe_mean(sim_to_p0[pos_mask])  # positives vs neg proto
+            avg_sim_neg_neg = _safe_mean(sim_to_p0[neg_mask])  # negatives vs neg proto
 
             return loss, {
                 "pull_mask_ratio": pull_mask_ratio.detach(),
-                "avg_sim_pos": avg_sim_pos.detach(),
-                "avg_sim_neg": avg_sim_neg.detach(),
+                "avg_sim_pos_pos": avg_sim_pos_pos.detach(),
+                "avg_sim_pos_neg": avg_sim_pos_neg.detach(),
+                "avg_sim_neg_pos": avg_sim_neg_pos.detach(),
+                "avg_sim_neg_neg": avg_sim_neg_neg.detach(),
             }
 
         except Exception as e:
@@ -283,8 +295,10 @@ class ConSupPrototypeLoss(nn.Module):
             self.logger.error(traceback.format_exc())
             return torch.tensor(0.0, device=self.device, requires_grad=True), {
                 "pull_mask_ratio": torch.tensor(0.0),
-                "avg_sim_pos": torch.tensor(0.0),
-                "avg_sim_neg": torch.tensor(0.0),
+                "avg_sim_pos_pos": torch.tensor(0.0),
+                "avg_sim_pos_neg": torch.tensor(0.0),
+                "avg_sim_neg_pos": torch.tensor(0.0),
+                "avg_sim_neg_neg": torch.tensor(0.0),
             }
 
     def forward(
@@ -334,12 +348,22 @@ class ConSupPrototypeLoss(nn.Module):
                 weighted_prototype = self.prototype_weight * prototype_loss
                 total_loss = total_loss + weighted_prototype
                 loss_components["prototype"] = prototype_loss.detach()
-                # Include diagnostic metrics
+                # Include diagnostic metrics (class-conditional)
                 loss_components["pull_mask_ratio"] = proto_diagnostics[
                     "pull_mask_ratio"
                 ]
-                loss_components["avg_sim_pos"] = proto_diagnostics["avg_sim_pos"]
-                loss_components["avg_sim_neg"] = proto_diagnostics["avg_sim_neg"]
+                loss_components["avg_sim_pos_pos"] = proto_diagnostics[
+                    "avg_sim_pos_pos"
+                ]
+                loss_components["avg_sim_pos_neg"] = proto_diagnostics[
+                    "avg_sim_pos_neg"
+                ]
+                loss_components["avg_sim_neg_pos"] = proto_diagnostics[
+                    "avg_sim_neg_pos"
+                ]
+                loss_components["avg_sim_neg_neg"] = proto_diagnostics[
+                    "avg_sim_neg_neg"
+                ]
 
             # Add total loss to components
             loss_components["total"] = total_loss
@@ -520,12 +544,22 @@ class PrototypeBCELoss(ConSupPrototypeLoss):
                 weighted_prototype = self.prototype_weight * prototype_loss
                 total_loss = total_loss + weighted_prototype
                 loss_components["prototype"] = prototype_loss.detach()
-                # Include diagnostic metrics
+                # Include diagnostic metrics (class-conditional)
                 loss_components["pull_mask_ratio"] = proto_diagnostics[
                     "pull_mask_ratio"
                 ]
-                loss_components["avg_sim_pos"] = proto_diagnostics["avg_sim_pos"]
-                loss_components["avg_sim_neg"] = proto_diagnostics["avg_sim_neg"]
+                loss_components["avg_sim_pos_pos"] = proto_diagnostics[
+                    "avg_sim_pos_pos"
+                ]
+                loss_components["avg_sim_pos_neg"] = proto_diagnostics[
+                    "avg_sim_pos_neg"
+                ]
+                loss_components["avg_sim_neg_pos"] = proto_diagnostics[
+                    "avg_sim_neg_pos"
+                ]
+                loss_components["avg_sim_neg_neg"] = proto_diagnostics[
+                    "avg_sim_neg_neg"
+                ]
 
             # 2. Optional contrastive component (if multiple views available)
             if self.unsupervised_weight > 0 and n_views > 1:

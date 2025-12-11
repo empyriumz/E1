@@ -136,6 +136,8 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     label_mask = label_mask[:, 0, :]
 
                 labels = batch["binding_labels"]
+                if labels.dim() == 3:
+                    labels = labels[:, 0, :]
 
                 for b in range(hidden.shape[0]):
                     valid = label_mask[b]
@@ -213,6 +215,7 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     ion=ion,
                     binding_labels=batch["binding_labels"],
                     label_mask=batch["label_mask"],
+                    contrastive_label_mask=batch.get("contrastive_label_mask"),
                     mlm_labels=batch.get("mlm_labels"),
                     loss_fn=self.loss_fn,
                 )
@@ -262,19 +265,23 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                         if hasattr(outputs.pull_mask_ratio, "item")
                         else float(outputs.pull_mask_ratio)
                     )
-                    sim_pos = (
-                        outputs.avg_sim_pos.item()
-                        if hasattr(outputs.avg_sim_pos, "item")
-                        else float(outputs.avg_sim_pos)
-                    )
-                    sim_neg = (
-                        outputs.avg_sim_neg.item()
-                        if hasattr(outputs.avg_sim_neg, "item")
-                        else float(outputs.avg_sim_neg)
-                    )
+
+                    def _to_float(x):
+                        if x is None:
+                            return None
+                        return x.item() if hasattr(x, "item") else float(x)
+
+                    sim_pos_pos = _to_float(outputs.avg_sim_pos_pos)
+                    sim_pos_neg = _to_float(outputs.avg_sim_pos_neg)
+                    sim_neg_pos = _to_float(outputs.avg_sim_neg_pos)
+                    sim_neg_neg = _to_float(outputs.avg_sim_neg_neg)
                     self.logger.info(
-                        f"  Proto diag: pull_ratio={pull_ratio:.3f}, "
-                        f"sim_pos={sim_pos:.3f}, sim_neg={sim_neg:.3f}"
+                        "  Proto diag: "
+                        f"pull_ratio={pull_ratio:.3f}, "
+                        f"sim_pos|pos={sim_pos_pos if sim_pos_pos is not None else 0.0:.3f}, "
+                        f"sim_pos|neg={sim_pos_neg if sim_pos_neg is not None else 0.0:.3f}, "
+                        f"sim_neg|pos={sim_neg_pos if sim_neg_pos is not None else 0.0:.3f}, "
+                        f"sim_neg|neg={sim_neg_neg if sim_neg_neg is not None else 0.0:.3f}"
                     )
 
             # Collect predictions for metrics
@@ -283,6 +290,11 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     probs = torch.sigmoid(outputs.logits)
                     label_mask = batch["label_mask"]
                     labels = batch["binding_labels"]
+
+                    if label_mask.dim() == 3:
+                        label_mask = label_mask[:, 0, :]
+                    if labels.dim() == 3:
+                        labels = labels[:, 0, :]
 
                     # Flatten valid labels to match logits
                     valid_labels = []
@@ -367,6 +379,7 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     ion=ion,
                     binding_labels=batch["binding_labels"],
                     label_mask=batch["label_mask"],
+                    contrastive_label_mask=batch.get("contrastive_label_mask"),
                     mlm_labels=batch.get("mlm_labels"),
                     loss_fn=self.loss_fn,
                 )
@@ -384,6 +397,11 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                 probs = torch.sigmoid(outputs.logits)
                 label_mask = batch["label_mask"]
                 labels = batch["binding_labels"]
+
+                if label_mask.dim() == 3:
+                    label_mask = label_mask[:, 0, :]
+                if labels.dim() == 3:
+                    labels = labels[:, 0, :]
 
                 valid_labels = []
                 for b in range(labels.shape[0]):

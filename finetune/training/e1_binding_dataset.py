@@ -271,6 +271,7 @@ class E1BindingDataset(Dataset):
             "labels": labels,
             "msa_context": msa_context,
             "protein_id": protein_id,
+            "msa_path": self._msa_paths.get(protein_id),
         }
 
     def get_class_counts(self) -> tuple:

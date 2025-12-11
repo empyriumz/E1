@@ -179,6 +179,8 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         mask_prob_max=contrastive_conf.get("mask_prob_max", 0.15),
         max_total_tokens=msa_config.get("max_token_length", 6144),
         max_query_tokens=msa_config.get("max_query_length", 768),
+        resample_msa_per_variant=contrastive_conf.get("resample_msa_per_variant", True),
+        msa_sampling_config=msa_config,
     )
 
     # Validation collator with single variant for consistent metrics
@@ -188,6 +190,8 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         mask_prob_max=0.0,
         max_total_tokens=val_msa_config.get("max_token_length", 8192),
         max_query_tokens=val_msa_config.get("max_query_length", 1024),
+        resample_msa_per_variant=False,
+        msa_sampling_config=val_msa_config,
     )
 
     # Create loss function

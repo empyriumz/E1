@@ -64,8 +64,8 @@ training:
   
   # MSA sampling (training) - reduced due to memory
   msa_sampling:
-    max_num_samples: 32
-    max_token_length: 4096
+    max_num_samples: 48
+    max_token_length: 6144
     max_query_length: 768
     max_query_similarity: 0.95
     min_query_similarity: 0.0
@@ -73,7 +73,7 @@ training:
 
   # MSA sampling (validation)
   validation_msa_sampling:
-    max_num_samples: 64
+    max_num_samples: 96
     max_token_length: 8192
     max_query_length: 1024
     max_query_similarity: 0.95
@@ -86,12 +86,11 @@ contrastive:
   num_variants: 4
   mask_prob_min: 0.05
   mask_prob_max: 0.15
+  resample_msa_per_variant: true
   
   # Prototype configuration
   # Prototypes are initialized from positive class mean: neg_prototype = -pos_prototype
   prototype_dim: null  # Defaults to hidden_size
-  use_ema_prototypes: true
-  ema_decay: 0.999
   
   # Loss weights (all active from start)
   temperature: 0.07
@@ -114,8 +113,8 @@ model:
   dropout: 0.3
 
 lora:
-  r: 32
-  alpha: 64
+  r: 16
+  alpha: 32
   lora_dropout: 0.2
   bias: "none"
   train_mlm_head: false

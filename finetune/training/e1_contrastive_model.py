@@ -34,8 +34,10 @@ class E1ContrastiveOutput(ModelOutput):
     last_hidden_state: Optional[torch.FloatTensor] = None
     # Diagnostic metrics
     pull_mask_ratio: Optional[torch.FloatTensor] = None
-    avg_sim_pos: Optional[torch.FloatTensor] = None
-    avg_sim_neg: Optional[torch.FloatTensor] = None
+    avg_sim_pos_pos: Optional[torch.FloatTensor] = None
+    avg_sim_pos_neg: Optional[torch.FloatTensor] = None
+    avg_sim_neg_pos: Optional[torch.FloatTensor] = None
+    avg_sim_neg_neg: Optional[torch.FloatTensor] = None
 
 
 class E1ForContrastiveBinding(E1ForJointBindingMLM):
@@ -155,6 +157,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         ion: str,
         binding_labels: Optional[torch.FloatTensor] = None,
         label_mask: Optional[torch.BoolTensor] = None,
+        contrastive_label_mask: Optional[torch.BoolTensor] = None,
         mlm_labels: Optional[torch.LongTensor] = None,
         loss_fn: Optional[nn.Module] = None,  # PrototypeBCELoss instance
         output_hidden_states: bool = False,
@@ -190,36 +193,50 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         batch_size, n_views, seq_len = input_ids.shape
         device = input_ids.device
 
-        # Flatten for backbone: [batch*n_views, seq_len]
-        flat_input_ids = input_ids.view(batch_size * n_views, seq_len)
-        flat_within_pos = within_seq_position_ids.view(batch_size * n_views, seq_len)
-        flat_global_pos = global_position_ids.view(batch_size * n_views, seq_len)
-        flat_seq_ids = sequence_ids.view(batch_size * n_views, seq_len)
+        # Process each view independently to avoid implicit inter-view coupling
+        view_hidden_states = []
+        mlm_losses = []
 
-        # Flatten MLM labels if provided
-        flat_mlm_labels = None
-        if mlm_labels is not None:
-            flat_mlm_labels = mlm_labels.view(batch_size * n_views, seq_len)
+        for v in range(n_views):
+            view_ids = input_ids[:, v, :]
+            view_within = within_seq_position_ids[:, v, :]
+            view_global = global_position_ids[:, v, :]
+            view_seq_ids = sequence_ids[:, v, :]
+            view_mlm_labels = mlm_labels[:, v, :] if mlm_labels is not None else None
 
-        # Forward through backbone
-        backbone_kwargs = dict(
-            input_ids=flat_input_ids,
-            within_seq_position_ids=flat_within_pos,
-            global_position_ids=flat_global_pos,
-            sequence_ids=flat_seq_ids,
-            output_hidden_states=output_hidden_states,
-            output_attentions=output_attentions,
-        )
-        if flat_mlm_labels is not None:
-            backbone_kwargs["labels"] = flat_mlm_labels
+            backbone_kwargs = dict(
+                input_ids=view_ids,
+                within_seq_position_ids=view_within,
+                global_position_ids=view_global,
+                sequence_ids=view_seq_ids,
+                output_hidden_states=output_hidden_states,
+                output_attentions=output_attentions,
+            )
+            if view_mlm_labels is not None:
+                backbone_kwargs["labels"] = view_mlm_labels
 
-        backbone_outputs = self._original_model(**backbone_kwargs)
-        flat_hidden = (
-            backbone_outputs.last_hidden_state
-        )  # [batch*n_views, seq_len, hidden]
+            backbone_outputs = self._original_model(**backbone_kwargs)
+            view_hidden_states.append(backbone_outputs.last_hidden_state)
 
-        # Reshape hidden states: [batch, n_views, seq_len, hidden]
-        hidden_states = flat_hidden.view(batch_size, n_views, seq_len, -1)
+            if view_mlm_labels is not None:
+                if (
+                    hasattr(backbone_outputs, "loss")
+                    and backbone_outputs.loss is not None
+                ):
+                    mlm_losses.append(backbone_outputs.loss)
+                else:
+                    mlm_logits = getattr(backbone_outputs, "logits", None)
+                    if mlm_logits is None:
+                        mlm_logits = self.mlm_head(backbone_outputs.last_hidden_state)
+                    mlm_losses.append(
+                        self.ce_loss(
+                            mlm_logits.view(-1, mlm_logits.size(-1)),
+                            view_mlm_labels.view(-1),
+                        )
+                    )
+
+        # Stack hidden states back: [batch, n_views, seq_len, hidden]
+        hidden_states = torch.stack(view_hidden_states, dim=1)
 
         # Get prototypes for this ion [2, hidden]
         prototypes = self.get_prototypes(ion)
@@ -233,43 +250,77 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         logits = None
         # Diagnostic metrics
         pull_mask_ratio = None
-        avg_sim_pos = None
-        avg_sim_neg = None
+        avg_sim_pos_pos = None
+        avg_sim_pos_neg = None
+        avg_sim_neg_pos = None
+        avg_sim_neg_neg = None
 
         # Compute contrastive + prototype + BCE loss if labels provided
         if binding_labels is not None and loss_fn is not None:
-            # Use label_mask to identify valid query residues
-            # All views share the same valid positions (masking doesn't exclude from loss)
-            if label_mask is not None:
-                valid_mask = label_mask  # [batch, seq_len]
-            else:
-                valid_mask = torch.ones(
+            # Prefer contrastive_label_mask (excludes masked tokens) if provided
+            effective_mask = (
+                contrastive_label_mask
+                if contrastive_label_mask is not None
+                else label_mask
+            )
+            if effective_mask is None:
+                effective_mask = torch.ones(
                     batch_size, seq_len, dtype=torch.bool, device=device
                 )
 
             # Extract valid residue embeddings per sample
-            # Each residue gets n_views embeddings for contrastive learning
             all_features = []
             all_labels = []
 
-            for b in range(batch_size):
-                valid_pos = valid_mask[b]  # [seq_len]
-                num_valid = valid_pos.sum().item()
+            if effective_mask.dim() == 2:
+                # Shared mask across views
+                for b in range(batch_size):
+                    valid_pos = effective_mask[b]
+                    num_valid = valid_pos.sum().item()
+                    if num_valid == 0:
+                        continue
 
-                if num_valid == 0:
-                    continue
+                    sample_emb = hidden_states[b, :, valid_pos, :].transpose(0, 1)
+                    sample_labels = binding_labels[b, valid_pos]
+                    all_features.append(sample_emb)
+                    all_labels.append(sample_labels)
+            else:
+                # Per-view masks – align residues by order within each view
+                for b in range(batch_size):
+                    per_view_embs = []
+                    per_view_labels = []
+                    min_valid = None
 
-                # Extract embeddings for valid residues: [n_views, num_valid, hidden]
-                sample_emb = hidden_states[b, :, valid_pos, :]
+                    for v in range(n_views):
+                        view_mask = effective_mask[b, v]
+                        emb_v = hidden_states[b, v][view_mask]
+                        if binding_labels.dim() == 3:
+                            labels_v = binding_labels[b, v][view_mask]
+                        else:
+                            labels_v = binding_labels[b][view_mask]
 
-                # Transpose to [num_valid, n_views, hidden]
-                sample_emb = sample_emb.transpose(0, 1)
+                        valid_len = emb_v.size(0)
+                        if valid_len == 0:
+                            continue
 
-                # Get labels for valid residues: [num_valid]
-                sample_labels = binding_labels[b, valid_pos]
+                        min_valid = (
+                            valid_len
+                            if min_valid is None
+                            else min(min_valid, valid_len)
+                        )
+                        per_view_embs.append(emb_v)
+                        per_view_labels.append(labels_v)
 
-                all_features.append(sample_emb)
-                all_labels.append(sample_labels)
+                    if min_valid is None or min_valid == 0:
+                        continue
+
+                    # Truncate all views to the minimum valid length to align residues
+                    aligned_embs = [emb[:min_valid] for emb in per_view_embs]
+                    aligned_labels = per_view_labels[0][:min_valid]
+
+                    sample_emb = torch.stack(aligned_embs, dim=0).transpose(0, 1)
+                    all_features.append(sample_emb)
+                    all_labels.append(aligned_labels)
 
             if all_features:
                 # Concatenate: [total_residues, n_views, hidden]
@@ -288,8 +339,10 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
                 loss_total = loss_dict["total"]
                 # Extract diagnostic metrics
                 pull_mask_ratio = loss_dict.get("pull_mask_ratio")
-                avg_sim_pos = loss_dict.get("avg_sim_pos")
-                avg_sim_neg = loss_dict.get("avg_sim_neg")
+                avg_sim_pos_pos = loss_dict.get("avg_sim_pos_pos")
+                avg_sim_pos_neg = loss_dict.get("avg_sim_pos_neg")
+                avg_sim_neg_pos = loss_dict.get("avg_sim_neg_pos")
+                avg_sim_neg_neg = loss_dict.get("avg_sim_neg_neg")
 
                 # Compute logits for metrics using average embedding across views
                 avg_features = features.mean(dim=1)  # [N, hidden]
@@ -301,20 +354,9 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
                 )
 
         # Compute MLM loss (average across views)
-        if mlm_labels is not None:
-            if hasattr(backbone_outputs, "loss") and backbone_outputs.loss is not None:
-                loss_mlm = backbone_outputs.loss
-            else:
-                mlm_logits = getattr(backbone_outputs, "logits", None)
-                if mlm_logits is None:
-                    mlm_logits = self.mlm_head(flat_hidden)
-                loss_mlm = self.ce_loss(
-                    mlm_logits.view(-1, mlm_logits.size(-1)), flat_mlm_labels.view(-1)
-                )
-
-            # Add weighted MLM loss to total
-            if loss_mlm is not None:
-                loss_total = loss_total + self.mlm_weight * loss_mlm
+        if mlm_labels is not None and mlm_losses:
+            loss_mlm = torch.stack(mlm_losses).mean()
+            loss_total = loss_total + self.mlm_weight * loss_mlm
 
         # Prototypes are frozen - no EMA update needed
 
@@ -326,8 +368,10 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
             loss_mlm=loss_mlm,
             logits=logits,
             embeddings=hidden_states,
-            last_hidden_state=flat_hidden.view(batch_size, n_views, seq_len, -1),
+            last_hidden_state=hidden_states,
             pull_mask_ratio=pull_mask_ratio,
-            avg_sim_pos=avg_sim_pos,
-            avg_sim_neg=avg_sim_neg,
+            avg_sim_pos_pos=avg_sim_pos_pos,
+            avg_sim_pos_neg=avg_sim_pos_neg,
+            avg_sim_neg_pos=avg_sim_neg_pos,
+            avg_sim_neg_neg=avg_sim_neg_neg,
         )
