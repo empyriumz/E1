@@ -354,13 +354,15 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                 all_probs.append(probs.cpu())
                 all_labels.append(flat_labels.cpu())
 
-                # OOF collection
+                # OOF collection - special handling for contrastive model
+                # The logits are already flattened to valid residues, so we need to
+                # reconstruct per-sample predictions for OOF storage
                 if collecting_oof:
-                    self._accumulate_oof_from_batch(
+                    self._accumulate_oof_contrastive(
                         ion=ion,
-                        probs=probs.unsqueeze(0) if probs.dim() == 1 else probs,
-                        labels=labels,
-                        label_mask=label_mask,
+                        probs=probs,  # Already flat [total_valid_residues]
+                        labels=labels,  # [batch, seq_len]
+                        label_mask=label_mask,  # [batch, seq_len]
                         protein_ids=batch.get("protein_ids"),
                         fold_idx=fold_idx,
                     )
@@ -409,3 +411,75 @@ class E1ContrastiveTrainer(E1BindingTrainer):
         self.metrics_tracker.update_val(val_metrics, ion)
 
         return val_metrics
+
+    def _accumulate_oof_contrastive(
+        self,
+        ion: str,
+        probs: torch.Tensor,
+        labels: torch.Tensor,
+        label_mask: torch.Tensor,
+        protein_ids: Optional[Any],
+        fold_idx: int,
+    ):
+        """
+        Collect per-residue OOF records for contrastive model.
+
+        Unlike the base class method, this handles the case where probs is already
+        flattened to valid residues only (output from E1ForContrastiveBinding).
+
+        Args:
+            ion: Ion type
+            probs: Flattened probabilities [total_valid_residues]
+            labels: Labels per sample [batch, seq_len]
+            label_mask: Valid residue mask [batch, seq_len]
+            protein_ids: Protein identifiers
+            fold_idx: Current fold index
+        """
+        batch_size = labels.shape[0]
+        if protein_ids is None or len(protein_ids) != batch_size:
+            protein_ids = [f"sample_{i}" for i in range(batch_size)]
+
+        entry = self.current_val_oof.setdefault(
+            ion, {"ids": [], "labels": [], "probs": [], "fold": fold_idx}
+        )
+
+        # Track position in the flattened probs tensor
+        flat_idx = 0
+
+        for sample_idx, protein_id in enumerate(protein_ids):
+            sample_mask = label_mask[sample_idx]
+            num_valid = sample_mask.sum().item()
+
+            if num_valid == 0:
+                continue
+
+            # Extract the portion of flattened probs for this sample
+            sample_probs = (
+                probs[flat_idx : flat_idx + num_valid]
+                .detach()
+                .float()
+                .cpu()
+                .numpy()
+                .ravel()
+                .tolist()
+            )
+            sample_labels = (
+                labels[sample_idx][sample_mask]
+                .detach()
+                .float()
+                .cpu()
+                .numpy()
+                .ravel()
+                .tolist()
+            )
+
+            # Positions are residue indices within the valid set
+            residue_ids = [f"{protein_id}:{pos}" for pos in range(len(sample_labels))]
+
+            entry["ids"].extend(residue_ids)
+            entry["labels"].extend(sample_labels)
+            entry["probs"].extend(sample_probs)
+            entry["fold"] = fold_idx
+
+            # Move to next sample's portion
+            flat_idx += num_valid

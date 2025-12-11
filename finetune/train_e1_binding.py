@@ -49,97 +49,19 @@ from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
 from training.e1_joint_model import E1ForJointBindingMLM
 from training.finetune_utils import process_config, set_seeds, setup_logging
 from training.loss_functions import compute_pos_weight
+from training.distributed_utils import (
+    is_distributed,
+    get_rank,
+    get_local_rank,
+    get_world_size,
+    is_main_process,
+    setup_distributed,
+    cleanup_distributed,
+)
+from training.scheduler import WarmupCosineScheduler
+from training.cv_utils import run_cv
 
 logger = logging.getLogger(__name__)
-
-
-def is_distributed():
-    """Check if running in distributed mode."""
-    return os.environ.get("RANK") is not None
-
-
-def get_rank():
-    """Get current process rank (0 if not distributed)."""
-    if is_distributed():
-        return int(os.environ.get("RANK", 0))
-    return 0
-
-
-def get_local_rank():
-    """Get local rank for device assignment."""
-    if is_distributed():
-        return int(os.environ.get("LOCAL_RANK", 0))
-    return 0
-
-
-def get_world_size():
-    """Get total number of processes."""
-    if is_distributed():
-        return int(os.environ.get("WORLD_SIZE", 1))
-    return 1
-
-
-def is_main_process():
-    """Check if this is the main process (rank 0)."""
-    return get_rank() == 0
-
-
-def setup_distributed():
-    """Initialize distributed training environment."""
-    if not is_distributed():
-        return None
-
-    # Initialize process group
-    dist.init_process_group(backend="nccl")
-
-    local_rank = get_local_rank()
-    torch.cuda.set_device(local_rank)
-
-    return local_rank
-
-
-def cleanup_distributed():
-    """Clean up distributed training."""
-    if is_distributed():
-        dist.destroy_process_group()
-
-
-class WarmupCosineScheduler:
-    """Learning rate scheduler with warmup and cosine decay."""
-
-    def __init__(
-        self,
-        optimizer: torch.optim.Optimizer,
-        warmup_epochs: int,
-        total_epochs: int,
-        min_lr: float = 1e-6,
-    ):
-        self.optimizer = optimizer
-        self.warmup_epochs = warmup_epochs
-        self.total_epochs = total_epochs
-        # Ensure min_lr is a float (handle case where it comes from config as string)
-        self.min_lr = float(min_lr)
-        # Ensure base_lrs are floats (handle case where lr comes from config as string)
-        self.base_lrs = [float(group["lr"]) for group in optimizer.param_groups]
-        self.current_epoch = 0
-
-    def step(self, metrics=None):
-        self.current_epoch += 1
-
-        if self.current_epoch <= self.warmup_epochs:
-            # Linear warmup
-            factor = self.current_epoch / self.warmup_epochs
-        else:
-            # Cosine decay
-            progress = (self.current_epoch - self.warmup_epochs) / (
-                self.total_epochs - self.warmup_epochs
-            )
-            factor = 0.5 * (1 + np.cos(np.pi * progress))
-
-        for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
-            # Ensure both values are floats before comparison
-            new_lr = max(float(base_lr) * float(factor), float(self.min_lr))
-            param_group["lr"] = new_lr
 
 
 def load_e1_for_classification(
@@ -650,70 +572,6 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     return fold_results
 
 
-def run_cv(conf, train_fn, base_output_path: str):
-    """
-    Run K-fold cross-validation.
-
-    Args:
-        conf: Configuration object
-        train_fn: Training function
-        base_output_path: Base output path
-
-    Returns:
-        List of fold results
-    """
-    if is_main_process():
-        logging.info(
-            f"K-fold cross-validation training begins at {datetime.datetime.now().strftime('%m-%d %H:%M')}"
-        )
-
-    num_folds = getattr(conf.training, "num_folds", 5)
-    if is_main_process():
-        logging.info(f"Running {num_folds}-fold cross-validation")
-        if is_distributed():
-            logging.info(f"  - Distributed training with {get_world_size()} GPUs")
-
-    Path(base_output_path).mkdir(parents=True, exist_ok=True)
-
-    all_fold_results = []
-
-    for fold_idx in range(1, num_folds + 1):
-        if is_main_process():
-            logging.info(f"\n{'='*120}")
-            logging.info(f"Starting Fold {fold_idx}/{num_folds}")
-            logging.info(f"{'='*120}")
-
-        fold_results = train_fn(conf, fold_idx, base_output_path)
-        all_fold_results.append(fold_results)
-
-        # Synchronize across processes before next fold
-        if is_distributed():
-            dist.barrier()
-
-    # Log summary (only on main process)
-    if is_main_process():
-        log_cv_summary(all_fold_results, conf)
-
-        # Aggregate and persist OOF predictions for downstream analysis
-        oof_path = Path(base_output_path) / "oof_preds.npz"
-        aggregate_and_save_oof(all_fold_results, save_path=oof_path)
-
-        # Compute and save global thresholds from OOF predictions
-        threshold_method = getattr(conf.training, "threshold_method", "youden")
-        thresholds_path = Path(base_output_path) / "global_thresholds.yaml"
-        compute_and_save_global_thresholds(
-            oof_path=oof_path,
-            output_path=thresholds_path,
-            threshold_method=threshold_method,
-        )
-
-        logging.info(
-            f"\nK-fold cross-validation completed at {datetime.datetime.now().strftime('%m-%d %H:%M')}"
-        )
-
-    return all_fold_results
-
-
 def log_cv_summary(all_fold_results: list, conf):
     """Log cross-validation summary."""
     logging.info(f"\n{'='*120}")
@@ -912,7 +770,25 @@ def compute_and_save_global_thresholds(
 def main(conf):
     """Main function implementing K-fold cross-validation."""
     base_output_path = str(conf.output_path)
-    return run_cv(conf, train_single_fold, base_output_path)
+    all_fold_results = run_cv(
+        conf, train_single_fold, base_output_path, log_summary_fn=log_cv_summary
+    )
+
+    if is_main_process():
+        # Aggregate and persist OOF predictions for downstream analysis
+        oof_path = Path(base_output_path) / "oof_preds.npz"
+        aggregate_and_save_oof(all_fold_results, save_path=oof_path)
+
+        # Compute and save global thresholds from OOF predictions
+        threshold_method = getattr(conf.training, "threshold_method", "youden")
+        thresholds_path = Path(base_output_path) / "global_thresholds.yaml"
+        compute_and_save_global_thresholds(
+            oof_path=oof_path,
+            output_path=thresholds_path,
+            threshold_method=threshold_method,
+        )
+
+    return all_fold_results
 
 
 if __name__ == "__main__":

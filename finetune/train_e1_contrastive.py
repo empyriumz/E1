@@ -47,91 +47,19 @@ from training.e1_contrastive_model import E1ForContrastiveBinding
 from training.e1_contrastive_trainer import E1ContrastiveTrainer
 from training.e1_finetune_utils import load_e1_model
 from training.finetune_utils import process_config, set_seeds, setup_logging
+from training.distributed_utils import (
+    is_distributed,
+    get_rank,
+    get_local_rank,
+    get_world_size,
+    is_main_process,
+    setup_distributed,
+    cleanup_distributed,
+)
+from training.scheduler import WarmupCosineScheduler
+from training.cv_utils import run_cv
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Distributed training utilities (reused from train_e1_binding.py)
-# ============================================================================
-
-
-def is_distributed():
-    return os.environ.get("RANK") is not None
-
-
-def get_rank():
-    if is_distributed():
-        return int(os.environ.get("RANK", 0))
-    return 0
-
-
-def get_local_rank():
-    if is_distributed():
-        return int(os.environ.get("LOCAL_RANK", 0))
-    return 0
-
-
-def get_world_size():
-    if is_distributed():
-        return int(os.environ.get("WORLD_SIZE", 1))
-    return 1
-
-
-def is_main_process():
-    return get_rank() == 0
-
-
-def setup_distributed():
-    if not is_distributed():
-        return None
-    dist.init_process_group(backend="nccl")
-    local_rank = get_local_rank()
-    torch.cuda.set_device(local_rank)
-    return local_rank
-
-
-def cleanup_distributed():
-    if is_distributed():
-        dist.destroy_process_group()
-
-
-# ============================================================================
-# Learning rate scheduler (reused from train_e1_binding.py)
-# ============================================================================
-
-
-class WarmupCosineScheduler:
-    """Learning rate scheduler with warmup and cosine decay."""
-
-    def __init__(
-        self,
-        optimizer: torch.optim.Optimizer,
-        warmup_epochs: int,
-        total_epochs: int,
-        min_lr: float = 1e-6,
-    ):
-        self.optimizer = optimizer
-        self.warmup_epochs = warmup_epochs
-        self.total_epochs = total_epochs
-        self.min_lr = float(min_lr)
-        self.base_lrs = [float(group["lr"]) for group in optimizer.param_groups]
-        self.current_epoch = 0
-
-    def step(self, metrics=None):
-        self.current_epoch += 1
-
-        if self.current_epoch <= self.warmup_epochs:
-            factor = self.current_epoch / self.warmup_epochs
-        else:
-            progress = (self.current_epoch - self.warmup_epochs) / (
-                self.total_epochs - self.warmup_epochs
-            )
-            factor = 0.5 * (1 + np.cos(np.pi * progress))
-
-        for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
-            new_lr = max(float(base_lr) * float(factor), float(self.min_lr))
-            param_group["lr"] = new_lr
 
 
 # ============================================================================
@@ -510,34 +438,12 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     }
 
 
-def run_cv(conf, train_fn, base_output_path: str):
-    """Run K-fold cross-validation."""
-    if is_main_process():
-        logging.info(
-            f"K-fold CV begins at {datetime.datetime.now().strftime('%m-%d %H:%M')}"
-        )
-
-    num_folds = getattr(conf.training, "num_folds", 5)
-    Path(base_output_path).mkdir(parents=True, exist_ok=True)
-
-    all_fold_results = []
-
-    for fold_idx in range(1, num_folds + 1):
-        if is_main_process():
-            logging.info(f"\n{'=' * 120}")
-            logging.info(f"Starting Fold {fold_idx}/{num_folds}")
-            logging.info(f"{'=' * 120}")
-
-        fold_results = train_fn(conf, fold_idx, base_output_path)
-        all_fold_results.append(fold_results)
-
-        if is_distributed():
-            dist.barrier()
-
-    if is_main_process():
-        log_cv_summary(all_fold_results, conf)
-
-    return all_fold_results
+def main(conf):
+    """Main function."""
+    base_output_path = str(conf.output_path)
+    return run_cv(
+        conf, train_single_fold, base_output_path, log_summary_fn=log_cv_summary
+    )
 
 
 def log_cv_summary(all_fold_results: list, conf):
@@ -563,12 +469,6 @@ def log_cv_summary(all_fold_results: list, conf):
     overall_mean = np.mean([r["best_total_auprc"] for r in all_fold_results])
     overall_std = np.std([r["best_total_auprc"] for r in all_fold_results])
     logging.info(f"\nOverall AUPRC: {overall_mean:.3f} ± {overall_std:.3f}")
-
-
-def main(conf):
-    """Main function."""
-    base_output_path = str(conf.output_path)
-    return run_cv(conf, train_single_fold, base_output_path)
 
 
 if __name__ == "__main__":
