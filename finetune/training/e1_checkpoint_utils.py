@@ -7,15 +7,14 @@ This module provides functions to reconstruct the full model from:
 3. Classifier heads checkpoint (saved as _heads.pt)
 """
 
-import os
-import torch
-import torch.nn as nn
-from pathlib import Path
-from typing import List, Optional, Dict, Any, Union
 import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
+import torch
+from modeling_e1 import E1ForMaskedLM
 from peft import PeftModel
-from modeling_e1 import E1ForMaskedLM, E1BatchPreparer
 from training.e1_classification_model import E1ForResidueClassification
 from training.e1_joint_model import E1ForJointBindingMLM
 from training.finetune_utils import _locate_offline_checkpoint, _resolve_hf_cache_dir
@@ -118,7 +117,7 @@ def load_lora_checkpoint(
     # Get ion types
     ion_types = heads_ckpt.get("ions", ["CA", "ZN", "MG"])
 
-    logger.info(f"Loading model from LoRA checkpoint:")
+    logger.info("Loading model from LoRA checkpoint:")
     logger.info(f"  - Base model: {base_model_checkpoint}")
     logger.info(f"  - LoRA adapters: {lora_dir}")
     logger.info(f"  - Ions: {ion_types}")

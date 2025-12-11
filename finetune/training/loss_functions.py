@@ -7,12 +7,13 @@ This module provides:
 - get_loss_function: Factory to get loss function from config
 """
 
+import logging
 import math
+from typing import Literal, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Literal
-import logging
 
 logger = logging.getLogger(__name__)
 

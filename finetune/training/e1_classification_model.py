@@ -6,14 +6,14 @@ classification heads on top of the E1 backbone for per-residue binary
 classification of metal binding sites.
 """
 
+import logging
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import List, Optional, Tuple
-from dataclasses import dataclass
-import logging
-
-from transformers.modeling_outputs import ModelOutput
 from modeling_e1 import E1ForMaskedLM
+from transformers.modeling_outputs import ModelOutput
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ class E1ForResidueClassification(E1ForMaskedLM):
         if freeze_backbone:
             self._freeze_backbone()
 
-        logger.info(f"E1ForResidueClassification initialized:")
+        logger.info("E1ForResidueClassification initialized:")
         logger.info(f"  - Hidden size: {self.hidden_size}")
         logger.info(f"  - Ion types: {self.ion_types}")
         logger.info(f"  - Dropout: {dropout}")

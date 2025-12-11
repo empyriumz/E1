@@ -1,17 +1,18 @@
-import os
 import argparse
 import logging
-import torch
-import numpy as np
-from typing import List, Optional, Dict, Tuple
+import os
 from pathlib import Path
-from tqdm import tqdm
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
 from Bio import SeqIO
 from modeling_e1 import (
     E1BatchPreparer,
     E1ForMaskedLM,
     compile_flex_attention_if_enabled,
 )
+from tqdm import tqdm
 
 # Use existing MSA sampling from E1 package
 from E1.msa_sampling import sample_context
@@ -516,6 +517,7 @@ def evaluate(config: Dict, output_path: Optional[str] = None):
 
 if __name__ == "__main__":
     import time
+
     import yaml
 
     start_time = time.time()

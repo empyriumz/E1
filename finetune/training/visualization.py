@@ -1,16 +1,17 @@
-import torch
-import numpy as np
-from sklearn.metrics import (
-    roc_curve,
-    roc_auc_score,
-    precision_recall_curve,
-    average_precision_score,
-    recall_score,
-    precision_score,
-)
-import matplotlib.pyplot as plt
 import logging
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from sklearn.metrics import (
+    average_precision_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -273,13 +274,7 @@ def plot_threshold_analysis(
         except ImportError:
             label = f"PR curve (AUPRC = {avg_precision:.3f})"
 
-        ax2.plot(
-            recall,
-            precision,
-            color="darkorange",
-            lw=2,
-            label=label,
-        )
+        ax2.plot(recall, precision, color="darkorange", lw=2, label=label)
 
         # Baseline precision (random classifier)
         baseline_precision = np.sum(labels_np) / len(labels_np)
@@ -299,12 +294,6 @@ def plot_threshold_analysis(
         if optimal_threshold is not None:
             # Find corresponding points on curves
             roc_idx = np.argmin(np.abs(roc_thresholds - optimal_threshold))
-            pr_idx = (
-                np.argmin(np.abs(pr_thresholds - optimal_threshold))
-                if len(pr_thresholds) > 0
-                else 0
-            )
-
             # Calculate metrics at this threshold
             y_pred = (probs >= optimal_threshold).astype(int)
             achieved_recall = recall_score(labels_np, y_pred)

@@ -9,20 +9,18 @@ This module provides E1BindingTrainer which handles:
 """
 
 import copy
+import logging
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 from torch.amp import autocast
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torchmetrics.classification import (
-    BinaryAUROC,
-    BinaryAveragePrecision,
-)
-from typing import Dict, Any, Optional, Tuple
-from pathlib import Path
-import logging
-from .metrics import high_recall_auprc, find_optimal_threshold, MetricsTracker
+from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
+
+from .metrics import MetricsTracker, find_optimal_threshold, high_recall_auprc
 from .visualization import plot_training_curves as viz_plot_training_curves
 
 logger = logging.getLogger(__name__)
@@ -138,7 +136,7 @@ class E1BindingTrainer:
         self.accum_steps = getattr(conf.training, "accum_steps", 1)
 
         if self.is_main_process:
-            self.logger.info(f"E1BindingTrainer initialized:")
+            self.logger.info("E1BindingTrainer initialized:")
             self.logger.info(f"  - Device: {device}")
             self.logger.info(f"  - Use BF16: {self.use_bf16}")
             self.logger.info(f"  - Gradient accumulation steps: {self.accum_steps}")

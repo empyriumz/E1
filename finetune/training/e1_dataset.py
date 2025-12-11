@@ -1,11 +1,12 @@
+import logging
 import os
 import random
-import pandas as pd
 from pathlib import Path
 from typing import List, Optional
+
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
-import logging
 
 from E1.msa_sampling import sample_context
 
@@ -220,7 +221,7 @@ class E1MSADataset(Dataset):
         # Store base seed for epoch-based variation during training
         self.base_seed = self.seed
 
-        logger.info(f"E1MSADataset initialized:")
+        logger.info("E1MSADataset initialized:")
         logger.info(f"  - MSA files: {len(self.msa_files)}")
         logger.info(f"  - Sequences: {len(self.sequences)}")
         logger.info(f"  - Max samples: {max_num_samples}")

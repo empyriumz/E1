@@ -3,24 +3,23 @@ from pathlib import Path
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
-import numpy as np
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Callable, List, Optional, TypedDict
+
 import networkx as nx
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils.rnn import pad_sequence
-
 from einops import rearrange, repeat
-from enum import Enum
-from typing import Any, TypedDict, Callable, Optional, List
-from dataclasses import dataclass
 from tokenizers import Tokenizer
+from torch.nn.utils.rnn import pad_sequence
+from tqdm.auto import tqdm
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.activations import ACT2FN
-from transformers.modeling_outputs import ModelOutput
 from transformers.utils import logging
-from tqdm.auto import tqdm
-
+from transformers.utils.generic import ModelOutput
 
 logger = logging.get_logger(__name__)
 
@@ -46,9 +45,9 @@ except ImportError:
 try:
     from torch.nn.attention.flex_attention import (
         BlockMask,
+        _create_sparse_block_from_block_mask,
         create_block_mask,
         flex_attention,
-        _create_sparse_block_from_block_mask,
     )
 
     # Compilation flag to track if flex_attention has been compiled.
@@ -1745,7 +1744,7 @@ class Pooler:
             )
         if G.number_of_edges() == 0:
             raise Exception(
-                f"You don't seem to have any attention edges left in the graph."
+                "You don't seem to have any attention edges left in the graph."
             )
 
         return nx.pagerank(

@@ -10,33 +10,28 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 import argparse
-import logging
-import torch
-import numpy as np
-import shutil
 import glob
+import logging
+import shutil
 from typing import List, Optional
+
+import numpy as np
+import torch
 from datasets import Dataset
-
-from transformers import (
-    TrainingArguments,
-    Trainer,
-    EarlyStoppingCallback,
-)
-
-from training.e1_dataset import create_e1_datasets_from_config, ConcatE1MSADataset
 from training.e1_data_collator import E1DataCollatorForMLM
+from training.e1_dataset import ConcatE1MSADataset, create_e1_datasets_from_config
 from training.e1_finetune_utils import load_e1_model
 from training.finetune_utils import (
+    ClearCacheCallback,
+    CompileFlexAttentionCallback,
+    MetricRenameCallback,
+    MSADatasetEpochCallback,
+    process_config,
+    save_model,
     set_seeds,
     setup_logging,
-    save_model,
-    ClearCacheCallback,
-    MetricRenameCallback,
-    process_config,
-    MSADatasetEpochCallback,
-    CompileFlexAttentionCallback,
 )
+from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
 
 # Module-level logger (will be configured in train function)
 logger = logging.getLogger(__name__)

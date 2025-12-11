@@ -10,23 +10,20 @@ if src_path not in sys.path:
 
 import argparse
 import logging
+from typing import Dict, Optional
+
 import torch
-from typing import Optional, Dict
-from peft import PeftModel, LoraConfig, get_peft_model
+
+# Import reusable functions from evaluate_original_model_hf
+from evaluate_original_model_hf import evaluate_sequence_batch, set_seeds, setup_logging
 from modeling_e1 import E1ForMaskedLM
+from peft import LoraConfig, PeftModel, get_peft_model
 
 # Import utilities for checkpoint resolution
 from training.finetune_utils import (
+    HF_CACHE_DIR,
     _locate_offline_checkpoint,
     _resolve_hf_cache_dir,
-    HF_CACHE_DIR,
-)
-
-# Import reusable functions from evaluate_original_model_hf
-from evaluate_original_model_hf import (
-    set_seeds,
-    setup_logging,
-    evaluate_sequence_batch,
 )
 
 # Module-level logger (will be configured in main function)
@@ -423,6 +420,7 @@ def evaluate(config: Dict, output_path: Optional[str] = None):
 
 if __name__ == "__main__":
     import time
+
     import yaml
 
     start_time = time.time()

@@ -8,6 +8,7 @@ are eligible for masking.
 """
 
 from typing import Any, Dict, List
+
 import torch
 from modeling_e1 import E1BatchPreparer
 from training.e1_binding_collator import E1DataCollatorForResidueClassification
@@ -50,9 +51,7 @@ class E1DataCollatorForJointBindingMLM:
         self.label_smoothing = label_smoothing
 
     def _apply_mlm_masking(
-        self,
-        input_ids: torch.Tensor,
-        sequence_ids: torch.Tensor,
+        self, input_ids: torch.Tensor, sequence_ids: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
         Apply MLM masking on query tokens only (exclude boundary tokens).

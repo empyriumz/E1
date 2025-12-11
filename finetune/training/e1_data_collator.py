@@ -1,7 +1,7 @@
-import torch
-from typing import List, Dict
 import logging
+from typing import Dict, List
 
+import torch
 from modeling_e1 import E1BatchPreparer
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class E1DataCollatorForMLM:
         # Get vocabulary size for random token replacement
         self.vocab_size = len(self.batch_preparer.vocab)
 
-        logger.info(f"E1DataCollatorForMLM initialized:")
+        logger.info("E1DataCollatorForMLM initialized:")
         logger.info(f"  - MLM probability: {mlm_probability}")
         logger.info(f"  - Mask token: {mask_token} (ID: {self.mask_token_id})")
         logger.info(f"  - Pad token ID: {self.pad_token_id}")
@@ -178,8 +178,6 @@ class E1DataCollatorForMLM:
         random_token_mask = (
             (mask_decision >= 0.8) & (mask_decision < 0.9) & selected_mask
         )  # 10% -> random
-        unchanged_mask = (mask_decision >= 0.9) & selected_mask  # 10% -> unchanged
-
         # Apply masking to input_ids
         masked_input_ids = input_ids.clone()
 

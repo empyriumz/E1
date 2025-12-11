@@ -28,30 +28,27 @@ if src_path not in sys.path:
 
 import argparse
 import datetime
-import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 import logging
-import numpy as np
 from pathlib import Path
 from timeit import default_timer as timer
-from training.finetune_utils import (
-    set_seeds,
-    setup_logging,
-    process_config,
-)
-from training.e1_classification_model import E1ForResidueClassification
-from training.e1_binding_dataset import (
-    create_binding_datasets_from_config,
-    compute_shared_ree_splits,
-)
-from training.e1_binding_collator import E1DataCollatorForResidueClassification
-from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
-from training.e1_binding_trainer import E1BindingTrainer
-from training.e1_finetune_utils import load_e1_model
-from training.e1_joint_model import E1ForJointBindingMLM
-from training.loss_functions import compute_pos_weight
+
+import numpy as np
+import torch
+import torch.distributed as dist
 from modeling_e1 import compile_flex_attention_if_enabled
+from torch.nn.parallel import DistributedDataParallel as DDP
+from training.e1_binding_collator import E1DataCollatorForResidueClassification
+from training.e1_binding_dataset import (
+    compute_shared_ree_splits,
+    create_binding_datasets_from_config,
+)
+from training.e1_binding_trainer import E1BindingTrainer
+from training.e1_classification_model import E1ForResidueClassification
+from training.e1_finetune_utils import load_e1_model
+from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
+from training.e1_joint_model import E1ForJointBindingMLM
+from training.finetune_utils import process_config, set_seeds, setup_logging
+from training.loss_functions import compute_pos_weight
 
 logger = logging.getLogger(__name__)
 
@@ -844,8 +841,8 @@ def compute_and_save_global_thresholds(
     Returns:
         Path to the saved thresholds YAML file
     """
-    from training.metrics import find_optimal_threshold
     import yaml
+    from training.metrics import find_optimal_threshold
 
     if not oof_path.exists():
         logging.warning(

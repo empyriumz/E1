@@ -1,16 +1,17 @@
-import torch
+import logging
+from typing import Any, Dict, List
+
 import numpy as np
-from typing import Dict, Any, List
+import torch
 from torchmetrics.classification import (
-    BinaryPrecisionRecallCurve,
-    BinaryROC,
+    BinaryConfusionMatrix,
     BinaryF1Score,
     BinaryMatthewsCorrCoef,
-    BinaryRecall,
     BinaryPrecision,
-    BinaryConfusionMatrix,
+    BinaryPrecisionRecallCurve,
+    BinaryRecall,
+    BinaryROC,
 )
-import logging
 
 logger = logging.getLogger(__name__)
 

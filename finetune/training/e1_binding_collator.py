@@ -7,10 +7,10 @@ This module provides E1DataCollatorForResidueClassification, which handles:
 - Properly handling special tokens and context sequence masking
 """
 
-import torch
-from typing import List, Dict, Any, Optional
 import logging
+from typing import Any, Dict, List, Optional
 
+import torch
 from modeling_e1 import E1BatchPreparer
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ class E1DataCollatorForResidueClassification:
         # Get boundary token IDs for special token detection
         self.boundary_token_ids = self.batch_preparer.boundary_token_ids
 
-        logger.info(f"E1DataCollatorForResidueClassification initialized:")
+        logger.info("E1DataCollatorForResidueClassification initialized:")
         logger.info(f"  - Pad token ID: {self.pad_token_id}")
         logger.info(f"  - Ignore index: {ignore_index}")
         logger.info(f"  - Max total tokens: {max_total_tokens}")
@@ -280,34 +280,3 @@ class E1DataCollatorForResidueClassification:
             # Keep protein_ids for downstream OOF tracking
             "protein_ids": [ex.get("protein_id") for ex in examples],
         }
-
-
-class E1DataCollatorForResidueClassificationWithPosWeight(
-    E1DataCollatorForResidueClassification
-):
-    """
-    Extended data collator that also computes pos_weight for BCE loss.
-
-    This is useful when you want to compute pos_weight per batch dynamically,
-    though typically pos_weight is computed from the full training set.
-    """
-
-    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        """Collate batch and compute pos_weight."""
-        batch = super().__call__(examples)
-
-        # Compute pos_weight from batch labels
-        valid_labels = batch["binding_labels"][batch["label_mask"]]
-        if len(valid_labels) > 0:
-            pos_count = valid_labels.sum().item()
-            neg_count = len(valid_labels) - pos_count
-            if pos_count > 0:
-                pos_weight = torch.tensor([neg_count / pos_count], dtype=torch.float)
-            else:
-                pos_weight = torch.tensor([1.0], dtype=torch.float)
-        else:
-            pos_weight = torch.tensor([1.0], dtype=torch.float)
-
-        batch["pos_weight"] = pos_weight
-
-        return batch

@@ -32,34 +32,30 @@ if src_path not in sys.path:
 
 import argparse
 import logging
-import yaml
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 import pandas as pd
 import torch
-from pathlib import Path
-from typing import Dict, List, Any, Optional
+import yaml
 from torch.amp import autocast
 from torch.utils.data import DataLoader
-
-from training.e1_checkpoint_utils import load_ensemble_models
-from training.e1_binding_dataset import (
-    create_binding_datasets_from_config,
-    E1BindingDataset,
-    process_binding_fasta_file,
-)
-from training.e1_binding_collator import E1DataCollatorForResidueClassification
-from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
-from training.metrics import find_optimal_threshold, high_recall_auprc
-from training.visualization import plot_threshold_analysis
 from torchmetrics.classification import (
     BinaryAUROC,
     BinaryAveragePrecision,
+    BinaryConfusionMatrix,
     BinaryF1Score,
     BinaryMatthewsCorrCoef,
-    BinaryRecall,
     BinaryPrecision,
-    BinaryConfusionMatrix,
+    BinaryRecall,
 )
+from training.e1_binding_collator import E1DataCollatorForResidueClassification
+from training.e1_binding_dataset import E1BindingDataset
+from training.e1_checkpoint_utils import load_ensemble_models
+from training.e1_joint_collator import E1DataCollatorForJointBindingMLM
+from training.metrics import find_optimal_threshold, high_recall_auprc
+from training.visualization import plot_threshold_analysis
 
 
 def setup_logging(output_dir: str):
@@ -70,10 +66,7 @@ def setup_logging(output_dir: str):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(),
-        ],
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
 
 
@@ -294,9 +287,7 @@ def aggregate_predictions(
 
 
 def compute_metrics(
-    probs: np.ndarray,
-    labels: np.ndarray,
-    threshold: float,
+    probs: np.ndarray, labels: np.ndarray, threshold: float
 ) -> Dict[str, Any]:
     """Compute classification metrics at a given threshold."""
     probs_tensor = torch.tensor(probs).float()
@@ -365,10 +356,7 @@ def main():
         help="Path to MSA directory for test data (supports {ION} placeholder)",
     )
     parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda:0",
-        help="CUDA device (default: cuda:0)",
+        "--device", type=str, default="cuda:0", help="CUDA device (default: cuda:0)"
     )
     parser.add_argument(
         "--num_folds",
@@ -377,10 +365,7 @@ def main():
         help="Number of folds to load (default: from config)",
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=4,
-        help="Inference batch size (default: 4)",
+        "--batch_size", type=int, default=4, help="Inference batch size (default: 4)"
     )
     parser.add_argument(
         "--use_val_as_test",
@@ -459,9 +444,9 @@ def main():
     all_predictions = {}
 
     for ion in ion_list:
-        logging.info(f"\n{'='*60}")
+        logging.info(f"\n{'=' * 60}")
         logging.info(f"Processing ion: {ion}")
-        logging.info(f"{'='*60}")
+        logging.info(f"{'=' * 60}")
 
         # Create test dataset
         try:
@@ -530,9 +515,7 @@ def main():
 
         # Compute metrics
         metrics = compute_metrics(
-            probs=aggregated["probs"],
-            labels=aggregated["labels"],
-            threshold=threshold,
+            probs=aggregated["probs"], labels=aggregated["labels"], threshold=threshold
         )
         metrics["ion"] = ion
         metrics["threshold_method"] = threshold_method
@@ -569,7 +552,7 @@ def main():
         plots_dir = output_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
 
-        logging.info(f"Generating threshold analysis plots...")
+        logging.info("Generating threshold analysis plots...")
         plot_threshold_analysis(
             outputs=aggregated["probs"],
             labels=aggregated["labels"],

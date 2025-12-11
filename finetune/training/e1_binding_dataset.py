@@ -8,13 +8,14 @@ This module provides E1BindingDataset which loads:
 The dataset returns dictionaries compatible with E1DataCollatorForResidueClassification.
 """
 
+import logging
 import os
 import random
-import torch
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
+
+import torch
 from torch.utils.data import Dataset
-import logging
 
 from E1.msa_sampling import sample_context
 
@@ -420,7 +421,7 @@ class E1BindingDatasetREE(Dataset):
         self.num_with_msa = len(self._msa_paths)
         self.num_without_msa = len(self.ids) - self.num_with_msa
 
-        logger.info(f"E1BindingDatasetREE initialized:")
+        logger.info("E1BindingDatasetREE initialized:")
         logger.info(f"  - Proteins: {len(self.ids)}")
         logger.info(f"  - With MSA: {self.num_with_msa}")
         logger.info(f"  - Without MSA: {self.num_without_msa}")
@@ -914,7 +915,7 @@ def create_binding_datasets_from_config(
 
     # Log MSA config differences if they exist
     if val_msa_config != msa_config:
-        logger.info(f"Using separate MSA sampling configs for train/val:")
+        logger.info("Using separate MSA sampling configs for train/val:")
         logger.info(
             f"  Train: max_num_samples={max_num_samples}, max_token_length={max_token_length}"
         )

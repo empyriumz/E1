@@ -1,6 +1,6 @@
-import random
 import argparse
 import os
+import random
 import sys
 
 # Add src directory to Python path so E1 module can be imported without installing the package
@@ -11,12 +11,13 @@ src_path = os.path.join(project_root, "src")
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 import json
-import torch
+from pathlib import Path
+from typing import Dict, Optional
+
 import numpy as np
+import torch
 from Bio import SeqIO
 from tqdm import tqdm
-from pathlib import Path
-from typing import Optional, Dict
 
 # E1 imports
 from src.E1.batch_preparer import E1BatchPreparer
@@ -25,7 +26,7 @@ from src.E1.msa_sampling import sample_context
 
 # Try to import PEFT for finetuned model support
 try:
-    from peft import PeftModel, LoraConfig, get_peft_model
+    from peft import LoraConfig, PeftModel, get_peft_model
 
     PEFT_AVAILABLE = True
 except ImportError:
@@ -43,9 +44,9 @@ try:
     if os.path.isdir(finetune_path) and finetune_path not in sys.path:
         sys.path.insert(0, finetune_path)
     from finetune.training.finetune_utils import (
+        HF_CACHE_DIR,
         _locate_offline_checkpoint,
         _resolve_hf_cache_dir,
-        HF_CACHE_DIR,
     )
 
     CHECKPOINT_UTILS_AVAILABLE = True
@@ -343,7 +344,7 @@ def extract_e1_embeddings(
         for seq_id, error_msg in failed_ids.items():
             print(f"  {seq_id}: {error_msg}")
 
-    print(f"\nProcessing complete:")
+    print("\nProcessing complete:")
     print(f"  Total sequences: {len(sequences)}")
     print(f"  Successfully processed: {n_processed}")
     print(f"  Failed: {len(failed_ids)}")
@@ -641,7 +642,7 @@ def main():
             )
             return
 
-        print(f"Loading finetuned E1 model with LoRA adapter")
+        print("Loading finetuned E1 model with LoRA adapter")
         print(f"  Base model: {args.model}")
         print(f"  Adapter checkpoint: {args.adapter_checkpoint}")
         try:

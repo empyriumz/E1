@@ -1,0 +1,129 @@
+# Configuration for E1 contrastive learning with prototype alignment
+# Residue-level classification with UCL + Prototype + BCE + MLM losses
+
+general:
+  seed: 1
+  gpu_id: 0
+
+data:
+  # FASTA files with per-residue binding labels
+  fasta_path: "/hpcgpfs01/scratch/xdai/biolip2_latest"
+  # MSA directory
+  msa_dir: /hpcgpfs01/scratch/xdai/msa
+
+training:
+  # Ion types to train
+  ions: ["LREE", "HREE", "REE"]
+  
+  # Training epochs
+  epochs: 30
+  
+  # Batch size (smaller due to num_variants multiplier)
+  batch_size: 2
+  
+  # Gradient accumulation (effective batch = batch_size * accum_steps * num_variants)
+  accum_steps: 4
+  
+  # Learning rate
+  learning_rate: 0.00003
+  
+  # Weight decay
+  weight_decay: 0.05
+  
+  # Warmup epochs
+  warmup_epochs: 3
+  
+  # Minimum learning rate during cosine decay
+  min_lr: 1e-6
+  
+  # Cross-validation settings
+  num_folds: 5
+  
+  # Early stopping
+  early_stop_patience: 7
+  
+  # Threshold method: "youden", "f1", "mcc"
+  threshold_method: "youden"
+  
+  # MLM loss weight (masking is done via contrastive.mask_prob_min/max)
+  mlm_weight: 1.0
+  
+  # Model settings
+  use_bf16: true
+  model_dtype: "bfloat16"
+  compile_flex_attention: true
+  save_model: true
+  output_dir: results/e1_contrastive
+  
+  # DDP settings
+  ddp_find_unused_parameters: true
+  
+  # Data loading
+  num_workers: 2
+  
+  # MSA sampling (training) - reduced due to memory
+  msa_sampling:
+    max_num_samples: 32
+    max_token_length: 6144
+    max_query_length: 768
+    max_query_similarity: 0.95
+    min_query_similarity: 0.0
+    neighbor_similarity_lower_bound: 0.8
+
+  # MSA sampling (validation)
+  validation_msa_sampling:
+    max_num_samples: 64
+    max_token_length: 8192
+    max_query_length: 1024
+    max_query_similarity: 0.95
+    min_query_similarity: 0.0
+    neighbor_similarity_lower_bound: 0.8
+
+# Contrastive learning configuration
+contrastive:
+  # Multi-variant generation (masking for both contrastive views and MLM)
+  num_variants: 4
+  mask_prob_min: 0.05
+  mask_prob_max: 0.15
+  
+  # Prototype configuration
+  # Prototypes are initialized from positive class mean: neg_prototype = -pos_prototype
+  prototype_dim: null  # Defaults to hidden_size (640)
+  use_ema_prototypes: true
+  ema_decay: 0.999
+  
+  # Loss weights (all active from start)
+  temperature: 0.07
+  prototype_weight: 1.0
+  unsupervised_weight: 1.0
+  bce_weight: 1.0
+  
+  # Margin parameters
+  eps: 0.1
+  eps_pos: 0.25
+  eps_neg: 0.05
+  
+  # Scoring temperature for BCE logits
+  scoring_temperature: 0.2
+  
+  # Label smoothing for BCE in loss function (0.0 = no smoothing)
+  label_smoothing: 0.05
+
+model:
+  checkpoint: "Synthyra/Profluent-E1-600M"
+  dropout: 0.3
+
+lora:
+  r: 32
+  alpha: 64
+  lora_dropout: 0.2
+  bias: "none"
+  train_mlm_head: false
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "w1"
+    - "w2"
+    - "w3"

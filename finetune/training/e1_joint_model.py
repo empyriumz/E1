@@ -4,7 +4,8 @@ Joint model for residue-level binding (BCE) + MLM auxiliary loss.
 Wraps the existing E1 backbone with ion-specific heads and an MLM head.
 """
 
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 import torch
 import torch.nn as nn
 from training.e1_classification_model import E1ForResidueClassification
