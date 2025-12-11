@@ -238,6 +238,45 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                 total_loss_mlm += outputs.loss_mlm.item()
             num_batches += 1
 
+            # Periodic logging with diagnostic metrics
+            log_interval = getattr(self.conf.training, "log_interval", 10)
+            effective_interval = log_interval * self.accum_steps
+
+            if self.is_main_process and (batch_idx + 1) % effective_interval == 0:
+                avg_loss = total_loss / max(num_batches, 1)
+                avg_contrastive = total_loss_contrastive / max(num_batches, 1)
+                avg_prototype = total_loss_prototype / max(num_batches, 1)
+                avg_bce = total_loss_bce / max(num_batches, 1)
+                avg_mlm = total_loss_mlm / max(num_batches, 1)
+
+                self.logger.info(
+                    f"[{ion}] Step {batch_idx + 1}/{len(train_loader)} "
+                    f"Loss: {avg_loss:.4f} (Cont: {avg_contrastive:.4f}, "
+                    f"Proto: {avg_prototype:.4f}, BCE: {avg_bce:.4f}, MLM: {avg_mlm:.4f})"
+                )
+
+                # Log diagnostic metrics (from current batch)
+                if outputs.pull_mask_ratio is not None:
+                    pull_ratio = (
+                        outputs.pull_mask_ratio.item()
+                        if hasattr(outputs.pull_mask_ratio, "item")
+                        else float(outputs.pull_mask_ratio)
+                    )
+                    sim_pos = (
+                        outputs.avg_sim_pos.item()
+                        if hasattr(outputs.avg_sim_pos, "item")
+                        else float(outputs.avg_sim_pos)
+                    )
+                    sim_neg = (
+                        outputs.avg_sim_neg.item()
+                        if hasattr(outputs.avg_sim_neg, "item")
+                        else float(outputs.avg_sim_neg)
+                    )
+                    self.logger.info(
+                        f"  Proto diag: pull_ratio={pull_ratio:.3f}, "
+                        f"sim_pos={sim_pos:.3f}, sim_neg={sim_neg:.3f}"
+                    )
+
             # Collect predictions for metrics
             if outputs.logits is not None:
                 with torch.no_grad():

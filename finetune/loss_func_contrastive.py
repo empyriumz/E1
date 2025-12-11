@@ -232,6 +232,9 @@ class ConSupPrototypeLoss(nn.Module):
             pull_mask_1 = is_class_1 & (sim_to_p1 <= sim_to_p0 + self.eps_pos)
             pull_mask = (pull_mask_0 | pull_mask_1).float()
 
+            # Compute pull mask ratio for diagnostics
+            pull_mask_ratio = pull_mask.sum() / pull_mask.numel()
+
             # Compute prototype alignment loss with temperature scaling
             proto_logits = sim_to_prototypes / self.temperature
             log_softmax_logits = F.log_softmax(proto_logits, dim=1)
@@ -244,7 +247,10 @@ class ConSupPrototypeLoss(nn.Module):
             # Apply conditional pulling mask
             num_pulled = pull_mask.sum().clamp(min=self.eps_numerical)
             if num_pulled == 0:
-                return torch.tensor(0.0, device=self.device, requires_grad=True)
+                return (
+                    torch.tensor(0.0, device=self.device, requires_grad=True),
+                    pull_mask_ratio,
+                )
 
             loss = (nll_loss * pull_mask).sum() / num_pulled
 
@@ -253,9 +259,20 @@ class ConSupPrototypeLoss(nn.Module):
                 self.logger.warning(
                     "Prototype alignment loss is NaN or Inf, returning zero loss"
                 )
-                return torch.tensor(0.0, device=self.device, requires_grad=True)
+                return (
+                    torch.tensor(0.0, device=self.device, requires_grad=True),
+                    pull_mask_ratio,
+                )
 
-            return loss
+            # Also compute average similarities to prototypes for diagnostics
+            avg_sim_pos = sim_to_p1.mean()
+            avg_sim_neg = sim_to_p0.mean()
+
+            return loss, {
+                "pull_mask_ratio": pull_mask_ratio.detach(),
+                "avg_sim_pos": avg_sim_pos.detach(),
+                "avg_sim_neg": avg_sim_neg.detach(),
+            }
 
         except Exception as e:
             self.logger.error(
@@ -264,7 +281,11 @@ class ConSupPrototypeLoss(nn.Module):
             import traceback
 
             self.logger.error(traceback.format_exc())
-            return torch.tensor(0.0, device=self.device, requires_grad=True)
+            return torch.tensor(0.0, device=self.device, requires_grad=True), {
+                "pull_mask_ratio": torch.tensor(0.0),
+                "avg_sim_pos": torch.tensor(0.0),
+                "avg_sim_neg": torch.tensor(0.0),
+            }
 
     def forward(
         self,
@@ -305,12 +326,20 @@ class ConSupPrototypeLoss(nn.Module):
 
             # Prototype alignment component
             if self.prototype_weight > 0:
-                prototype_loss = self._compute_prototype_alignment_loss(
-                    features, labels, batch_size, n_views
+                prototype_loss, proto_diagnostics = (
+                    self._compute_prototype_alignment_loss(
+                        features, labels, batch_size, n_views
+                    )
                 )
                 weighted_prototype = self.prototype_weight * prototype_loss
                 total_loss = total_loss + weighted_prototype
                 loss_components["prototype"] = prototype_loss.detach()
+                # Include diagnostic metrics
+                loss_components["pull_mask_ratio"] = proto_diagnostics[
+                    "pull_mask_ratio"
+                ]
+                loss_components["avg_sim_pos"] = proto_diagnostics["avg_sim_pos"]
+                loss_components["avg_sim_neg"] = proto_diagnostics["avg_sim_neg"]
 
             # Add total loss to components
             loss_components["total"] = total_loss
@@ -483,12 +512,20 @@ class PrototypeBCELoss(ConSupPrototypeLoss):
 
             # 1. Prototype alignment component (ESSENTIAL for meaningful classification)
             if self.prototype_weight > 0:
-                prototype_loss = self._compute_prototype_alignment_loss(
-                    features, labels, batch_size, n_views
+                prototype_loss, proto_diagnostics = (
+                    self._compute_prototype_alignment_loss(
+                        features, labels, batch_size, n_views
+                    )
                 )
                 weighted_prototype = self.prototype_weight * prototype_loss
                 total_loss = total_loss + weighted_prototype
                 loss_components["prototype"] = prototype_loss.detach()
+                # Include diagnostic metrics
+                loss_components["pull_mask_ratio"] = proto_diagnostics[
+                    "pull_mask_ratio"
+                ]
+                loss_components["avg_sim_pos"] = proto_diagnostics["avg_sim_pos"]
+                loss_components["avg_sim_neg"] = proto_diagnostics["avg_sim_neg"]
 
             # 2. Optional contrastive component (if multiple views available)
             if self.unsupervised_weight > 0 and n_views > 1:

@@ -32,6 +32,10 @@ class E1ContrastiveOutput(ModelOutput):
     logits: Optional[torch.FloatTensor] = None  # BCE logits from prototype scores
     embeddings: Optional[torch.FloatTensor] = None  # [batch, n_views, seq_len, hidden]
     last_hidden_state: Optional[torch.FloatTensor] = None
+    # Diagnostic metrics
+    pull_mask_ratio: Optional[torch.FloatTensor] = None
+    avg_sim_pos: Optional[torch.FloatTensor] = None
+    avg_sim_neg: Optional[torch.FloatTensor] = None
 
 
 class E1ForContrastiveBinding(E1ForJointBindingMLM):
@@ -63,7 +67,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         use_ema_prototypes: bool = True,
         ema_decay: float = 0.999,
         # MLM configuration
-        mlm_weight: float = 0.4,
+        mlm_weight: float = 1.0,
     ):
         """
         Initialize E1 contrastive learning model.
@@ -267,6 +271,10 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
         loss_bce = None
         loss_mlm = None
         logits = None
+        # Diagnostic metrics
+        pull_mask_ratio = None
+        avg_sim_pos = None
+        avg_sim_neg = None
 
         # Compute contrastive + prototype + BCE loss if labels provided
         if binding_labels is not None and loss_fn is not None:
@@ -318,6 +326,10 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
                 loss_prototype = loss_dict.get("prototype")
                 loss_bce = loss_dict.get("bce")
                 loss_total = loss_dict["total"]
+                # Extract diagnostic metrics
+                pull_mask_ratio = loss_dict.get("pull_mask_ratio")
+                avg_sim_pos = loss_dict.get("avg_sim_pos")
+                avg_sim_neg = loss_dict.get("avg_sim_neg")
 
                 # Compute logits for metrics using average embedding across views
                 avg_features = features.mean(dim=1)  # [N, hidden]
@@ -357,4 +369,7 @@ class E1ForContrastiveBinding(E1ForJointBindingMLM):
             logits=logits,
             embeddings=hidden_states,
             last_hidden_state=flat_hidden.view(batch_size, n_views, seq_len, -1),
+            pull_mask_ratio=pull_mask_ratio,
+            avg_sim_pos=avg_sim_pos,
+            avg_sim_neg=avg_sim_neg,
         )
