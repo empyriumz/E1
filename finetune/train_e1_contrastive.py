@@ -76,12 +76,36 @@ def load_e1_for_contrastive(
     model_dtype: str = None,
     device: torch.device = None,
     mlm_weight: float = 0.4,
+    gradient_checkpointing: bool = False,
 ):
     """Load E1 model with LoRA and wrap with contrastive learning components."""
     # Load E1 model with LoRA
     e1_model, batch_preparer = load_e1_model(
         checkpoint=checkpoint, lora_config=lora_config, model_dtype=model_dtype
     )
+
+    # Enable gradient checkpointing on the backbone if requested
+    if gradient_checkpointing:
+        enabled = False
+        # Try to enable on the base model (e.g. E1ForMaskedLM) inside PeftModel
+        if hasattr(e1_model, "gradient_checkpointing_enable"):
+            e1_model.gradient_checkpointing_enable()
+            enabled = True
+
+        # Also ensure the backbone E1Model has it enabled (PreTrainedModel logic)
+        # Should be handled by above, but let's be safe if e1_model is complex
+        if hasattr(e1_model, "base_model") and hasattr(
+            e1_model.base_model, "gradient_checkpointing_enable"
+        ):
+            e1_model.base_model.gradient_checkpointing_enable()
+            enabled = True
+
+        if enabled:
+            logging.info("Gradient checkpointing successfully enabled on E1 backbone.")
+        else:
+            logging.warning(
+                "Gradient checkpointing requested but model does not support 'gradient_checkpointing_enable'."
+            )
 
     # Wrap with contrastive model
     model = E1ForContrastiveBinding(
@@ -152,6 +176,7 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
         model_dtype=getattr(conf.training, "model_dtype", "bfloat16"),
         device=device,
         mlm_weight=getattr(conf.training, "mlm_weight", 0.4),
+        gradient_checkpointing=getattr(conf.training, "gradient_checkpointing", False),
     )
 
     # Wrap with DDP if distributed
@@ -168,6 +193,20 @@ def train_single_fold(conf, fold_idx: int, base_output_path: str):
     if is_main_process():
         logging.info(f"Model: E1ForContrastiveBinding with ions {ion_list}")
         logging.info(f"  - Device: {device}")
+
+        # Verify gradient checkpointing status
+        backbone = (
+            model.module.e1_backbone if hasattr(model, "module") else model.e1_backbone
+        )
+        # Handle PeftModel wrapper
+        if hasattr(backbone, "base_model"):
+            backbone = backbone.base_model
+        if hasattr(backbone, "model"):
+            backbone = backbone.model
+
+        is_checkpointing = getattr(backbone, "gradient_checkpointing", False)
+        status_msg = "ACTIVE" if is_checkpointing else "INACTIVE"
+        logging.info(f"  - Gradient Checkpointing: {status_msg} (verified on backbone)")
 
     # Create contrastive collator
     msa_config = conf.training.get("msa_sampling", {})

@@ -19,10 +19,10 @@ training:
   epochs: 30
   
   # Batch size (smaller due to num_variants multiplier)
-  batch_size: 2
+  batch_size: 1
   
   # Gradient accumulation (effective batch = batch_size * accum_steps * num_variants)
-  accum_steps: 4
+  accum_steps: 8
   
   log_interval: 5
   # Learning rate
@@ -59,13 +59,16 @@ training:
   # DDP settings
   ddp_find_unused_parameters: true
   
+  # Gradient Checkpointing (saves memory)
+  gradient_checkpointing: true
+  
   # Data loading
   num_workers: 2
   
   # MSA sampling (training) - reduced due to memory
   msa_sampling:
-    max_num_samples: 48
-    max_token_length: 6144
+    max_num_samples: 32
+    max_token_length: 4096
     max_query_length: 768
     max_query_similarity: 0.95
     min_query_similarity: 0.0
@@ -73,8 +76,8 @@ training:
 
   # MSA sampling (validation)
   validation_msa_sampling:
-    max_num_samples: 96
-    max_token_length: 8192
+    max_num_samples: 64
+    max_token_length: 6144
     max_query_length: 1024
     max_query_similarity: 0.95
     min_query_similarity: 0.0
