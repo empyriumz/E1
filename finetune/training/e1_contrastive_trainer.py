@@ -290,17 +290,70 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     probs = torch.sigmoid(outputs.logits)
                     label_mask = batch["label_mask"]
                     labels = batch["binding_labels"]
+                    contrastive_label_mask = batch.get("contrastive_label_mask")
 
-                    if label_mask.dim() == 3:
-                        label_mask = label_mask[:, 0, :]
-                    if labels.dim() == 3:
-                        labels = labels[:, 0, :]
+                    # Use the same mask logic as the model: prefer contrastive_label_mask if available
+                    effective_mask = (
+                        contrastive_label_mask
+                        if contrastive_label_mask is not None
+                        else label_mask
+                    )
+                    if effective_mask is None:
+                        effective_mask = torch.ones(
+                            labels.shape[0], labels.shape[-1] if labels.dim() > 1 else labels.shape[0],
+                            dtype=torch.bool, device=labels.device
+                        )
 
-                    # Flatten valid labels to match logits
+                    # Extract labels using the same logic as the model
+                    batch_size = labels.shape[0]
                     valid_labels = []
-                    for b in range(labels.shape[0]):
-                        valid_labels.append(labels[b, label_mask[b]])
-                    flat_labels = torch.cat(valid_labels)
+
+                    if effective_mask.dim() == 2:
+                        # Shared mask across views (2D: [batch, seq_len])
+                        if labels.dim() == 3:
+                            labels = labels[:, 0, :]  # Take first view
+                        for b in range(batch_size):
+                            valid_pos = effective_mask[b]
+                            num_valid = valid_pos.sum().item()
+                            if num_valid == 0:
+                                continue
+                            valid_labels.append(labels[b, valid_pos])
+                    else:
+                        # Per-view masks (3D: [batch, n_views, seq_len]) - align residues like model does
+                        for b in range(batch_size):
+                            per_view_labels = []
+                            min_valid = None
+
+                            for v in range(effective_mask.shape[1]):
+                                view_mask = effective_mask[b, v]
+                                if labels.dim() == 3:
+                                    labels_v = labels[b, v][view_mask]
+                                else:
+                                    labels_v = labels[b][view_mask]
+
+                                valid_len = labels_v.size(0)
+                                if valid_len == 0:
+                                    continue
+
+                                min_valid = (
+                                    valid_len
+                                    if min_valid is None
+                                    else min(min_valid, valid_len)
+                                )
+                                per_view_labels.append(labels_v)
+
+                            if min_valid is None or min_valid == 0:
+                                continue
+
+                            # Truncate all views to the minimum valid length to align residues
+                            aligned_labels = per_view_labels[0][:min_valid]
+                            valid_labels.append(aligned_labels)
+
+                    if valid_labels:
+                        flat_labels = torch.cat(valid_labels)
+                    else:
+                        # No valid labels, create empty tensor matching logits shape
+                        flat_labels = torch.empty(0, dtype=labels.dtype, device=labels.device)
 
                     all_probs.append(probs.detach().cpu())
                     all_labels.append(flat_labels.detach().cpu())
@@ -397,16 +450,70 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                 probs = torch.sigmoid(outputs.logits)
                 label_mask = batch["label_mask"]
                 labels = batch["binding_labels"]
+                contrastive_label_mask = batch.get("contrastive_label_mask")
 
-                if label_mask.dim() == 3:
-                    label_mask = label_mask[:, 0, :]
-                if labels.dim() == 3:
-                    labels = labels[:, 0, :]
+                # Use the same mask logic as the model: prefer contrastive_label_mask if available
+                effective_mask = (
+                    contrastive_label_mask
+                    if contrastive_label_mask is not None
+                    else label_mask
+                )
+                if effective_mask is None:
+                    effective_mask = torch.ones(
+                        labels.shape[0], labels.shape[-1] if labels.dim() > 1 else labels.shape[0],
+                        dtype=torch.bool, device=labels.device
+                    )
 
+                # Extract labels using the same logic as the model
+                batch_size = labels.shape[0]
                 valid_labels = []
-                for b in range(labels.shape[0]):
-                    valid_labels.append(labels[b, label_mask[b]])
-                flat_labels = torch.cat(valid_labels)
+
+                if effective_mask.dim() == 2:
+                    # Shared mask across views (2D: [batch, seq_len])
+                    if labels.dim() == 3:
+                        labels = labels[:, 0, :]  # Take first view
+                    for b in range(batch_size):
+                        valid_pos = effective_mask[b]
+                        num_valid = valid_pos.sum().item()
+                        if num_valid == 0:
+                            continue
+                        valid_labels.append(labels[b, valid_pos])
+                else:
+                    # Per-view masks (3D: [batch, n_views, seq_len]) - align residues like model does
+                    for b in range(batch_size):
+                        per_view_labels = []
+                        min_valid = None
+
+                        for v in range(effective_mask.shape[1]):
+                            view_mask = effective_mask[b, v]
+                            if labels.dim() == 3:
+                                labels_v = labels[b, v][view_mask]
+                            else:
+                                labels_v = labels[b][view_mask]
+
+                            valid_len = labels_v.size(0)
+                            if valid_len == 0:
+                                continue
+
+                            min_valid = (
+                                valid_len
+                                if min_valid is None
+                                else min(min_valid, valid_len)
+                            )
+                            per_view_labels.append(labels_v)
+
+                        if min_valid is None or min_valid == 0:
+                            continue
+
+                        # Truncate all views to the minimum valid length to align residues
+                        aligned_labels = per_view_labels[0][:min_valid]
+                        valid_labels.append(aligned_labels)
+
+                if valid_labels:
+                    flat_labels = torch.cat(valid_labels)
+                else:
+                    # No valid labels, create empty tensor matching logits shape
+                    flat_labels = torch.empty(0, dtype=labels.dtype, device=labels.device)
 
                 all_probs.append(probs.cpu())
                 all_labels.append(flat_labels.cpu())

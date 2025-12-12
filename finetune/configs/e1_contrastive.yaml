@@ -19,10 +19,10 @@ training:
   epochs: 30
   
   # Batch size (smaller due to num_variants multiplier)
-  batch_size: 1
+  batch_size: 2
   
   # Gradient accumulation (effective batch = batch_size * accum_steps * num_variants)
-  accum_steps: 8
+  accum_steps: 4
   
   log_interval: 5
   # Learning rate
