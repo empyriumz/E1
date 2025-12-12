@@ -23,7 +23,7 @@ training:
   
   # Gradient accumulation (effective batch = batch_size * accum_steps * num_variants)
   accum_steps: 4
-  
+  gradient_checkpointing: false
   log_interval: 5
   # Learning rate
   learning_rate: 0.0001
