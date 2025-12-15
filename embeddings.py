@@ -60,6 +60,7 @@ def create_masked_sequence_variants(
     num_variants=2,
     mask_token="?",
     mask_prob_range=(0.05, 0.15),
+    seed=None,
 ):
     """
     Create masked variants of a protein sequence for contrastive learning.
@@ -68,12 +69,18 @@ def create_masked_sequence_variants(
     This enables unsupervised contrastive learning where different masked versions
     of the same sequence serve as positive pairs.
 
+    Guarantees that each variant is masked differently by:
+    - Using deterministic seeding per sequence for reproducibility
+    - Ensuring uniqueness of each variant
+    - Retrying if duplicate variants are generated
+
     Args:
         sequence (str): Original protein sequence
         num_variants (int): Number of masked variants to create (default: 2)
         mask_token (str): Token to use for masking (default: "?" for E1)
         mask_prob_range (tuple): Range for masking probability (min, max). If min equals max,
                                a fixed probability is used.
+        seed (int, optional): Random seed for reproducibility. If None, uses hash of sequence.
 
     Returns:
         list: List of masked sequence variants (includes original + masked versions)
@@ -92,18 +99,96 @@ def create_masked_sequence_variants(
 
     variants = [sequence]  # Always include the original sequence
 
-    # Create masked variants
-    for _ in range(num_variants - 1):
-        # Determine masking probability for this variant
-        variant_mask_prob = random.uniform(mask_prob_range[0], mask_prob_range[1])
+    # Use deterministic seed based on sequence hash if seed not provided
+    # This ensures reproducibility while maintaining diversity across sequences
+    if seed is None:
+        base_seed = hash(sequence) % (2**31)  # Convert to positive 32-bit int
+    else:
+        base_seed = seed
 
-        masked_sequence_parts = []
-        for amino_acid in sequence:
-            if random.random() < variant_mask_prob:
-                masked_sequence_parts.append(mask_token)
+    # Create masked variants with uniqueness guarantee
+    max_retries = 100  # Maximum attempts to generate a unique variant
+    for variant_idx in range(num_variants - 1):
+        attempts = 0
+        new_variant = None
+        while attempts < max_retries:
+            # Create RNG with current seed (updated on retries)
+            current_seed = base_seed + variant_idx + attempts * 1000
+            rng = random.Random(current_seed)
+
+            # Determine masking probability for this variant
+            variant_mask_prob = rng.uniform(mask_prob_range[0], mask_prob_range[1])
+
+            masked_sequence_parts = []
+            for amino_acid in sequence:
+                if rng.random() < variant_mask_prob:
+                    masked_sequence_parts.append(mask_token)
+                else:
+                    masked_sequence_parts.append(amino_acid)
+            new_variant = "".join(masked_sequence_parts)
+
+            # Check uniqueness: ensure this variant differs from all previous variants
+            is_unique = True
+            for existing_variant in variants:
+                if new_variant == existing_variant:
+                    is_unique = False
+                    break
+
+            if is_unique:
+                variants.append(new_variant)
+                break
+
+            attempts += 1
+
+        if attempts >= max_retries:
+            # Fallback: if we can't generate a unique variant after max_retries,
+            # create one that's guaranteed to differ by masking at least one different position
+            # Use a fresh RNG for the fallback
+            fallback_seed = base_seed + variant_idx + max_retries * 1000
+            rng = random.Random(fallback_seed)
+
+            # Create a variant that masks a position not masked in any existing variant
+            new_variant_list = list(sequence)
+            masked_positions = set()
+            for v in variants:
+                for i, char in enumerate(v):
+                    if char == mask_token:
+                        masked_positions.add(i)
+
+            # Find a position to mask that's not already masked in all variants
+            candidate_positions = [
+                i for i in range(len(sequence)) if i not in masked_positions
+            ]
+            if not candidate_positions:
+                # All positions are masked in some variant, pick a random one
+                candidate_positions = list(range(len(sequence)))
+
+            if candidate_positions:
+                pos_to_mask = rng.choice(candidate_positions)
+                new_variant_list[pos_to_mask] = mask_token
+                new_variant = "".join(new_variant_list)
+                # Double-check uniqueness before adding
+                if new_variant not in variants:
+                    variants.append(new_variant)
+                else:
+                    # Last resort: find first position that differs and mask it
+                    # Reset to original sequence first
+                    new_variant_list = list(sequence)
+                    for i in range(len(sequence)):
+                        if new_variant_list[i] != mask_token:
+                            new_variant_list[i] = mask_token
+                            new_variant = "".join(new_variant_list)
+                            if new_variant not in variants:
+                                variants.append(new_variant)
+                                break
             else:
-                masked_sequence_parts.append(amino_acid)
-        variants.append("".join(masked_sequence_parts))
+                # Last resort: append a variant with a single mask at a random position
+                pos = rng.randint(0, len(sequence) - 1)
+                new_variant_list = list(sequence)
+                new_variant_list[pos] = mask_token
+                new_variant = "".join(new_variant_list)
+                if new_variant not in variants:
+                    variants.append(new_variant)
 
     return variants
 
@@ -231,32 +316,37 @@ def extract_e1_embeddings(
             # Store embeddings for all variants
             all_embeddings = []
 
-            # Prepare MSA context once using the original sequence (if available)
-            # This ensures consistent context across all variants
-            has_context = False
-            context_str = None
-            if msa_dir:
-                msa_path = Path(msa_dir) / f"{seq_id}.a3m"
-                if msa_path.exists():
-                    try:
-                        context_str, _ = sample_context(
-                            msa_path=str(msa_path),
-                            max_num_samples=511,
-                            max_token_length=14784,
-                            max_query_similarity=0.95,
-                            min_query_similarity=0.0,
-                            neighbor_similarity_lower_bound=0.8,
-                            seed=42,
-                        )
-                        has_context = True
-                    except Exception as e:
-                        print(f"Error sampling context for {seq_id}: {e}")
-                        context_str = None
-                        has_context = False
+            # Base seed for MSA sampling (will be varied per variant for diversity)
+            base_seed = 42
 
-            for variant_seq in sequence_variants:
+            for variant_idx, variant_seq in enumerate(sequence_variants):
                 # 1. Prepare Input (Homologs + Query)
-                # Use original sequence for MSA context, but masked variant for the query sequence
+                # Sample a different MSA context for each variant to increase embedding diversity
+                # Each variant uses a unique seed (base_seed + variant_idx) to sample different sequences from the MSA
+                has_context = False
+                context_str = None
+                if msa_dir:
+                    msa_path = Path(msa_dir) / f"{seq_id}.a3m"
+                    if msa_path.exists():
+                        try:
+                            context_str, _ = sample_context(
+                                msa_path=str(msa_path),
+                                max_num_samples=511,
+                                max_token_length=14784,
+                                max_query_similarity=0.95,
+                                min_query_similarity=0.0,
+                                neighbor_similarity_lower_bound=0.8,
+                                seed=base_seed + variant_idx,
+                            )
+                            has_context = True
+                        except Exception as e:
+                            print(
+                                f"Error sampling context for {seq_id} variant {variant_idx}: {e}"
+                            )
+                            context_str = None
+                            has_context = False
+
+                # Combine MSA context (if available) with the masked variant query sequence
                 if has_context and context_str is not None:
                     input_str = context_str + "," + variant_seq
                 else:
