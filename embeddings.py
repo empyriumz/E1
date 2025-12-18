@@ -241,6 +241,7 @@ def extract_e1_embeddings(
     device=None,
     num_variants=1,
     mask_prob_range=(0.05, 0.15),
+    overwrite=False,
 ):
     """
     Extract per-residue embeddings for each sequence using E1 model.
@@ -257,21 +258,22 @@ def extract_e1_embeddings(
         num_variants: Number of variants per sequence (1 = no augmentation, >1 = include masked variants)
         mask_prob_range: Tuple with (min, max) for masking probability.
                          If min equals max, a fixed probability is used.
+        overwrite: If True, force re-processing even if output files exist (Default: False)
 
     Returns:
-        tuple: (n_processed, n_failed, failed_ids)
-            - n_processed: Number of sequences processed
+        tuple: (n_processed, n_skipped, n_failed, failed_ids)
+            - n_processed: Number of sequences successfully processed (excluding skipped)
+            - n_skipped: Number of sequences skipped because they already exist
             - n_failed: Number of sequences that failed
             - failed_ids: Dictionary mapping failed sequence IDs to their error messages
     """
     # Create output directory if it doesn't exist
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    # Use the provided device (already validated)
-
-    # Track failures
+    # Track stats
     failed_ids = {}
     n_processed = 0
+    n_skipped = 0
 
     print(
         f"Extracting embeddings with input masking variants: {num_variants} variant(s) per sequence"
@@ -297,8 +299,8 @@ def extract_e1_embeddings(
             output_path = Path(output_dir) / f"{seq_id}.npy"
 
         # Skip if already exists
-        if output_path.exists():
-            n_processed += 1
+        if not overwrite and output_path.exists():
+            n_skipped += 1
             continue
 
         try:
@@ -425,7 +427,7 @@ def extract_e1_embeddings(
 
         # Update progress bar description with stats
         progress_bar.set_description(
-            f"Processing: {n_processed} succeeded, {len(failed_ids)} failed"
+            f"Processing: {n_processed} processed, {n_skipped} skipped, {len(failed_ids)} failed"
         )
 
     # Print summary of failures if any occurred
@@ -437,9 +439,10 @@ def extract_e1_embeddings(
     print("\nProcessing complete:")
     print(f"  Total sequences: {len(sequences)}")
     print(f"  Successfully processed: {n_processed}")
+    print(f"  Skipped: {n_skipped}")
     print(f"  Failed: {len(failed_ids)}")
 
-    return n_processed, len(failed_ids), failed_ids
+    return n_processed, n_skipped, len(failed_ids), failed_ids
 
 
 def load_finetuned_model(
@@ -517,6 +520,7 @@ def load_finetuned_model(
     # Load base model with trust_remote_code=True for custom model classes
     load_kwargs = {
         "trust_remote_code": True,
+        "local_files_only": True,
     }
     if cache_dir:
         load_kwargs["cache_dir"] = cache_dir
@@ -717,6 +721,12 @@ def main():
         choices=["float16", "bfloat16"],
         help="Model dtype for loading (float16 or bfloat16). If not specified, uses default dtype.",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        default=False,
+        help="Force re-processing even if output files exist. By default, existing files are skipped.",
+    )
     args = parser.parse_args()
 
     # Validate device
@@ -751,7 +761,46 @@ def main():
         # Load regular model
         print(f"Loading E1 model: {args.model}")
         try:
-            load_kwargs = {"trust_remote_code": True}
+            # Resolve offline checkpoint path
+            checkpoint_path = os.path.expanduser(args.model)
+            checkpoint_is_local = os.path.isdir(checkpoint_path)
+
+            if checkpoint_is_local:
+                resolved_checkpoint = checkpoint_path
+                cache_dir = None
+            elif CHECKPOINT_UTILS_AVAILABLE:
+                resolved_checkpoint = _locate_offline_checkpoint(args.model)
+                cache_dir = (
+                    HF_CACHE_DIR
+                    if os.path.isdir(HF_CACHE_DIR)
+                    else _resolve_hf_cache_dir()
+                )
+
+                if resolved_checkpoint is None:
+                    raise ValueError(
+                        f"Failed to locate offline checkpoint for '{args.model}'. "
+                        f"Please ensure the model is available in the local cache directory: {cache_dir or 'HF_CACHE_DIR'}"
+                    )
+                else:
+                    print(
+                        f"Resolved offline checkpoint for '{args.model}' at '{resolved_checkpoint}'"
+                    )
+            else:
+                raise ValueError(
+                    f"Cannot load model '{args.model}' offline. "
+                    "Checkpoint resolution utilities are not available. "
+                    "Please ensure finetune.training.finetune_utils is importable."
+                )
+
+            if cache_dir:
+                print(f"Using HuggingFace cache directory: {cache_dir}")
+
+            load_kwargs = {
+                "trust_remote_code": True,
+                "local_files_only": True,
+            }
+            if cache_dir:
+                load_kwargs["cache_dir"] = cache_dir
             if args.model_dtype:
                 if args.model_dtype == "float16":
                     load_kwargs["dtype"] = torch.float16
@@ -759,7 +808,7 @@ def main():
                     load_kwargs["dtype"] = torch.bfloat16
 
             model = (
-                E1ForMaskedLM.from_pretrained(args.model, **load_kwargs)
+                E1ForMaskedLM.from_pretrained(resolved_checkpoint, **load_kwargs)
                 .to(device)
                 .eval()
             )
@@ -781,7 +830,7 @@ def main():
 
     # Extract embeddings
     print(f"Extracting embeddings to: {args.output_dir}")
-    n_processed, n_failed, failed_ids = extract_e1_embeddings(
+    n_processed, n_skipped, n_failed, failed_ids = extract_e1_embeddings(
         model=model,
         batch_preparer=batch_preparer,
         sequences=sequences,
@@ -790,6 +839,7 @@ def main():
         device=device,
         num_variants=args.num_variants,
         mask_prob_range=tuple(args.mask_prob_range),
+        overwrite=args.overwrite,
     )
 
     if n_failed > 0:

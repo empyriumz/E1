@@ -300,8 +300,10 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     )
                     if effective_mask is None:
                         effective_mask = torch.ones(
-                            labels.shape[0], labels.shape[-1] if labels.dim() > 1 else labels.shape[0],
-                            dtype=torch.bool, device=labels.device
+                            labels.shape[0],
+                            labels.shape[-1] if labels.dim() > 1 else labels.shape[0],
+                            dtype=torch.bool,
+                            device=labels.device,
                         )
 
                     # Extract labels using the same logic as the model
@@ -353,7 +355,9 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                         flat_labels = torch.cat(valid_labels)
                     else:
                         # No valid labels, create empty tensor matching logits shape
-                        flat_labels = torch.empty(0, dtype=labels.dtype, device=labels.device)
+                        flat_labels = torch.empty(
+                            0, dtype=labels.dtype, device=labels.device
+                        )
 
                     all_probs.append(probs.detach().cpu())
                     all_labels.append(flat_labels.detach().cpu())
@@ -460,8 +464,10 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                 )
                 if effective_mask is None:
                     effective_mask = torch.ones(
-                        labels.shape[0], labels.shape[-1] if labels.dim() > 1 else labels.shape[0],
-                        dtype=torch.bool, device=labels.device
+                        labels.shape[0],
+                        labels.shape[-1] if labels.dim() > 1 else labels.shape[0],
+                        dtype=torch.bool,
+                        device=labels.device,
                     )
 
                 # Extract labels using the same logic as the model
@@ -513,7 +519,9 @@ class E1ContrastiveTrainer(E1BindingTrainer):
                     flat_labels = torch.cat(valid_labels)
                 else:
                     # No valid labels, create empty tensor matching logits shape
-                    flat_labels = torch.empty(0, dtype=labels.dtype, device=labels.device)
+                    flat_labels = torch.empty(
+                        0, dtype=labels.dtype, device=labels.device
+                    )
 
                 all_probs.append(probs.cpu())
                 all_labels.append(flat_labels.cpu())
