@@ -2,7 +2,7 @@
 authors = [{name = "Profluent Team"}]
 maintainers = [{name = "Sarthak Jain", email = "sjain@profluent.bio"}]
 name = "E1"
-requires-python = ">= 3.12, <3.13"
+requires-python = ">= 3.12, <3.14"
 version = "1.0.0"
 
 dependencies = [

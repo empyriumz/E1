@@ -5,6 +5,8 @@ environments:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
     - https://pypi.org/simple
+    options:
+      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_libgcc_mutex-0.1-conda_forge.tar.bz2
@@ -205,6 +207,8 @@ environments:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
     - https://pypi.org/simple
+    options:
+      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_libgcc_mutex-0.1-conda_forge.tar.bz2
@@ -672,7 +676,7 @@ packages:
 - pypi: ./
   name: e1
   version: 1.0.0
-  sha256: f16e914984cd9564169fbbd5f211f911addd191403755de24bd251b692775f22
+  sha256: ab6267a1dfd841ce2f664972cea297c2122f6afcb562c5bd4947aa8a5c76889a
   requires_dist:
   - transformers<4.57.0
   - tokenizers
@@ -687,8 +691,7 @@ packages:
   - einops
   - torch>=2.7.0,<2.9.0
   - ipykernel
-  requires_python: '>=3.12,<3.13'
-  editable: true
+  requires_python: '>=3.12,<3.14'
 - pypi: https://files.pythonhosted.org/packages/87/62/9773de14fe6c45c23649e98b83231fffd7b9892b6cf863251dc2afa73643/einops-0.8.1-py3-none-any.whl
   name: einops
   version: 0.8.1
