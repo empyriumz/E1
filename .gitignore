@@ -1,4 +1,5 @@
 results/
+.codex
 finetune/msa
 # Byte-compiled / optimized / DLL files
 __pycache__/
