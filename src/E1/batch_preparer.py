@@ -5,6 +5,7 @@ from tokenizers import Tokenizer
 from torch.nn.utils.rnn import pad_sequence
 
 from .tokenizer import get_tokenizer
+from .dist import get_device
 
 
 @dataclass
@@ -26,22 +27,18 @@ class E1BatchPreparer:
         data_prep_config: DataPrepConfig | None = None,
         tokenizer: Tokenizer | None = None,
         preserve_context_labels: bool = False,
+        device: torch.device | None = None,
     ):
         self.tokenizer = tokenizer or get_tokenizer()
         self.data_prep_config = data_prep_config or DataPrepConfig()
         self.pad_token_id = self.tokenizer.token_to_id("<pad>")
         self.preserve_context_labels = preserve_context_labels
-        device = (
-            torch.cuda.current_device()
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
         self.boundary_token_ids = torch.tensor(
             [
                 self.tokenizer.token_to_id(token)
                 for token in ["<bos>", "<eos>", "1", "2", "<pad>"]
             ],
-            device=device,
+            device=(device or get_device()),
         ).long()
         self.mask_token = "?"  # nosec
         self.mask_token_id = self.tokenizer.token_to_id(self.mask_token)
@@ -171,7 +168,7 @@ class E1BatchPreparer:
         return {"input_ids": tokens, "labels": tokens, "position_ids": position_ids}
 
     def get_boundary_token_mask(self, tokens: torch.Tensor) -> torch.BoolTensor:
-        return torch.isin(tokens, self.boundary_token_ids)
+        return torch.isin(tokens, self.boundary_token_ids.to(tokens.device))
 
     def get_mask_positions_mask(self, tokens: torch.Tensor) -> torch.BoolTensor:
         return tokens == self.mask_token_id

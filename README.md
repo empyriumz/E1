@@ -2,6 +2,10 @@
 
 This repository contains the code for the [Profluent E1](https://www.biorxiv.org/content/10.1101/2025.11.12.688125v1) family of models - our best in class single sequence and retrieval augmented protein representation models. They are designed to be drop-in replacement for ESM family of models. See Section on [licenses](#licenses) for the license details. 
 
+## Changelog
+
+- 2026-03-09: Modify MSA Sampling code to fix bug. Files modified: `src/E1/msa_sampling.py`.
+
 ## Available Models
 
 | Model Name | Model Parameters | HuggingFace Link                                                      |
